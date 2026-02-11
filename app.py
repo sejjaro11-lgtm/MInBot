@@ -94,12 +94,28 @@ if prompt := st.chat_input("Zeptej se na cokoliv z historie firem..."):
                 context += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
         # 2. Odpověď přes GPT-4o
+       # 2. Odpověď přes GPT-4o s Grahamovou filozofií
         if context:
+            system_prompt = """
+            Jsi MInBot, elitní finanční analytik a věrný žák Benjamina Grahama. 
+            Tvým úkolem je radit investorům striktně podle filozofie hodnotového investování.
+            
+            ZDROJE ZNALOSTÍ:
+            Využívej POUZE přiložený kontext z knihy 'Inteligentní investor' (označený jako Bible).
+            
+            TVOJE ZÁSADY:
+            1. VŽDY zdůrazňuj rozdíl mezi investicí a spekulací.
+            2. Pokud analyzuješ firmu, hledej 'bezpečnostní polštář' (Margin of Safety).
+            3. Na trh se dívej optikou 'Pana Trha' (Mr. Market).
+            4. Buď konzervativní, věcný a odkazuj na konkrétní myšlenky z textu.
+            5. Odpovídej vždy česky.
+            """
+
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": "Jsi finanční analytik. Odpovídej česky pouze na základě kontextu."},
-                    {"role": "user", "content": f"Kontext:\n{context}\n\nOtázka: {prompt}"}
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Kontext z tvé databáze:\n{context}\n\nOtázka investora: {prompt}"}
                 ]
             )
             answer = response.choices[0].message.content
@@ -108,5 +124,6 @@ if prompt := st.chat_input("Zeptej se na cokoliv z historie firem..."):
             
         st.markdown(answer)
         st.session_state.messages.append({"role": "assistant", "content": answer})
+
 
 
