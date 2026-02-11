@@ -7,7 +7,7 @@ from pypdf import PdfReader
 
 # --- NASTAVENÍ ---
 st.set_page_config(page_title="MInBot", page_icon="📈", layout="wide")
-st.title("📈 MInBot: Permanentní Archiv")
+st.title("📈 MInBot")
 
 # Načtení klíčů ze Secrets
 try:
@@ -108,3 +108,4 @@ if prompt := st.chat_input("Zeptej se na cokoliv z historie firem..."):
             
         st.markdown(answer)
         st.session_state.messages.append({"role": "assistant", "content": answer})
+
