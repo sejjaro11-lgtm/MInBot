@@ -1,0 +1,5 @@
+streamlit
+openai
+pypdf
+sentence-transformers
+torch
