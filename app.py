@@ -6,7 +6,7 @@ import torch
 
 # --- 1. NASTAVENÍ STRÁNKY ---
 st.set_page_config(page_title="AI Investiční Poradce", page_icon="📈", layout="centered")
-st.title("📈 Digitální Benjamin Graham")
+st.title("📈 MInBot")
 st.markdown("---")
 st.write("Vítejte v rozhraní vašeho osobního AI analytika. Nahrajte knihu nebo výroční zprávu a začněte se ptát.")
 
@@ -115,4 +115,5 @@ if api_key and uploaded_file:
 elif not api_key:
     st.info("💡 Prosím, zadejte svůj OpenAI API klíč v levém panelu pro aktivaci 'mozku' aplikace.")
 elif not uploaded_file:
+
     st.info("📄 Nahrajte PDF dokument (např. knihu nebo výroční zprávu) pro zahájení analýzy.")
