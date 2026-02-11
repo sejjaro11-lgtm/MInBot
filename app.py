@@ -1,119 +1,110 @@
 import streamlit as st
 import openai
+from pinecone import Pinecone
+from sentence_transformers import SentenceTransformer
+import os
 from pypdf import PdfReader
-from sentence_transformers import SentenceTransformer, util
-import torch
 
-# --- 1. NASTAVENÍ STRÁNKY ---
-st.set_page_config(page_title="AI Investiční Poradce", page_icon="📈", layout="centered")
-st.title("📈 MInBot")
-st.markdown("---")
-st.write("Vítejte v rozhraní vašeho osobního AI analytika. Nahrajte knihu nebo výroční zprávu a začněte se ptát.")
+# --- NASTAVENÍ ---
+st.set_page_config(page_title="MInBot", page_icon="📈", layout="wide")
+st.title("📈 MInBot: Permanentní Archiv")
 
-# --- 2. SIDEBAR (NASTAVENÍ A NAHRÁVÁNÍ) ---
-with st.sidebar:
-    st.header("⚙️ Nastavení")
-    
-    # Priorita: Secrets (profi) -> Text Input (ruční zadání)
-    api_key = ""
-    if "OPENAI_API_KEY" in st.secrets:
-        api_key = st.secrets["OPENAI_API_KEY"]
-    else:
-        api_key = st.text_input("Vložte OpenAI API klíč:", type="password", help="Klíč začíná na sk-...")
-    
-    st.divider()
-    uploaded_file = st.file_uploader("Nahrajte PDF k analýze", type="pdf")
-    
-    if st.button("Vymazat paměť"):
-        st.session_state.clear()
-        st.rerun()
+# Načtení klíčů ze Secrets
+try:
+    PINECONE_KEY = st.secrets["PINECONE_API_KEY"]
+    OPENAI_KEY = st.secrets["OPENAI_API_KEY"]
+except:
+    st.error("Chybí API klíče! Zkontroluj nastavení Secrets ve Streamlitu.")
+    st.stop()
 
-# --- 3. FUNKCE PRO AI MODEL (CACHE) ---
+# Inicializace
+pc = Pinecone(api_key=PINECONE_KEY)
+client = openai.OpenAI(api_key=OPENAI_KEY)
+index_name = "minbot-index"
+index = pc.Index(index_name)
+
 @st.cache_resource
-def load_search_model():
-    # Tento model běží lokálně na serveru a je zdarma
+def get_model():
     return SentenceTransformer('all-MiniLM-L6-v2')
 
-# --- 4. HLAVNÍ LOGIKA ZPRACOVÁNÍ ---
-if api_key and uploaded_file:
-    client = openai.OpenAI(api_key=api_key)
-    search_model = load_search_model()
+model = get_model()
 
-    # Zpracování PDF - proběhne jen jednou při nahrání nového souboru
-    if "vectors" not in st.session_state or st.session_state.get("last_file") != uploaded_file.name:
-        with st.status("Analyzuji dokument... (extrakce textu a tvorba indexu)") as status:
-            # Čtení textu
-            reader = PdfReader(uploaded_file)
-            full_text = ""
-            for page in reader.pages:
-                extracted = page.extract_text()
-                if extracted:
-                    full_text += extracted + " "
+# --- FUNKCE PRO UČENÍ ---
+def index_documents():
+    data_dir = "data"
+    if not os.path.exists(data_dir):
+        st.error("Složka 'data' neexistuje. Vytvoř ji na GitHubu.")
+        return
+    
+    files = [f for f in os.listdir(data_dir) if f.endswith(".pdf")]
+    if not files:
+        st.warning("Složka 'data' je prázdná. Nahraj tam PDF soubory.")
+        return
+
+    status = st.status("MInBot se učí z nových dokumentů...")
+    for filename in files:
+        path = os.path.join(data_dir, filename)
+        reader = PdfReader(path)
+        text = ""
+        for page in reader.pages:
+            extract = page.extract_text()
+            if extract: text += extract + " "
+        
+        # Rozsekání a uložení
+        chunk_size = 1000
+        chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size - 100)]
+        
+        for i, chunk in enumerate(chunks):
+            vector = model.encode(chunk).tolist()
+            # Uložení do Pinecone
+            index.upsert(vectors=[{
+                "id": f"{filename}_{i}",
+                "values": vector,
+                "metadata": {"text": chunk, "source": filename}
+            }])
+    status.update(label="✅ Učení dokončeno! Data jsou uložena v 'mozku'.", state="complete")
+
+# Tlačítko v bočním panelu
+with st.sidebar:
+    st.header("Správa znalostí")
+    if st.button("Aktualizovat znalosti z GitHubu"):
+        index_documents()
+
+# --- CHAT ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+if prompt := st.chat_input("Zeptej se na cokoliv z historie firem..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        # 1. Hledání v Pinecone
+        query_vector = model.encode(prompt).tolist()
+        results = index.query(vector=query_vector, top_k=5, include_metadata=True)
+        
+        context = ""
+        for res in results['matches']:
+            if 'text' in res['metadata']:
+                context += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
+
+        # 2. Odpověď přes GPT-4o
+        if context:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "Jsi finanční analytik. Odpovídej česky pouze na základě kontextu."},
+                    {"role": "user", "content": f"Kontext:\n{context}\n\nOtázka: {prompt}"}
+                ]
+            )
+            answer = response.choices[0].message.content
+        else:
+            answer = "Bohužel, k tomuto tématu nemám v databázi žádné informace. Zkus nahrát příslušnou výroční zprávu."
             
-            # Rozdělení na menší kousky (Chunks)
-            chunk_size = 1000
-            overlap = 100
-            chunks = []
-            for i in range(0, len(full_text), chunk_size - overlap):
-                chunks.append(full_text[i:i + chunk_size])
-            
-            # Vytvoření vektorů (Embeddings)
-            embeddings = search_model.encode(chunks, convert_to_tensor=True)
-            
-            # Uložení do session_state (paměť prohlížeče)
-            st.session_state["chunks"] = chunks
-            st.session_state["vectors"] = embeddings
-            st.session_state["last_file"] = uploaded_file.name
-            status.update(label="Analýza dokončena!", state="complete")
-
-    # --- 5. CHATOVÁNÍ ---
-    # Inicializace historie chatu
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    # Zobrazení historie chatu
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    # Vstup od uživatele
-    if prompt := st.chat_input("Na co se chcete zeptat Benjamina Grahama?"):
-        # Uložení dotazu uživatele
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        # Generování odpovědi (RAG proces)
-        with st.chat_message("assistant"):
-            with st.spinner("Hledám v dokumentu a formuluji odpověď..."):
-                # A) Sémantické hledání relevantních pasáží
-                q_embed = search_model.encode(prompt, convert_to_tensor=True)
-                hits = util.semantic_search(q_embed, st.session_state["vectors"], top_k=3)[0]
-                
-                context = ""
-                for hit in hits:
-                    context += st.session_state["chunks"][hit['corpus_id']] + "\n\n"
-                
-                # B) Dotaz na GPT-4o
-                try:
-                    response = client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[
-                            {"role": "system", "content": f"Jsi Benjamin Graham, otec hodnotového investování. Odpovídej česky a vycházej POUZE z tohoto textu:\n\n{context}"},
-                            {"role": "user", "content": prompt}
-                        ],
-                        temperature=0.3 # Nižší teplota = přesnější odpovědi
-                    )
-                    
-                    answer = response.choices[0].message.content
-                    st.markdown(answer)
-                    st.session_state.messages.append({"role": "assistant", "content": answer})
-                    
-                except Exception as e:
-                    st.error(f"Chyba při komunikaci s OpenAI: {e}")
-
-elif not api_key:
-    st.info("💡 Prosím, zadejte svůj OpenAI API klíč v levém panelu pro aktivaci 'mozku' aplikace.")
-elif not uploaded_file:
-
-    st.info("📄 Nahrajte PDF dokument (např. knihu nebo výroční zprávu) pro zahájení analýzy.")
+        st.markdown(answer)
+        st.session_state.messages.append({"role": "assistant", "content": answer})
