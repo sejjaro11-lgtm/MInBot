@@ -3,4 +3,5 @@ openai
 pypdf
 sentence-transformers
 torch
-pinecone-client
+pinecone
+
