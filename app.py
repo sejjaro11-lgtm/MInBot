@@ -4,6 +4,8 @@ from pinecone import Pinecone
 from sentence_transformers import SentenceTransformer
 import os
 from pypdf import PdfReader
+import pandas as pd     # Tento řádek přidej
+import requests      # Tento řádek přidej
 
 # --- NASTAVENÍ ---
 st.set_page_config(page_title="MInBot", page_icon="📈", layout="wide")
@@ -93,37 +95,52 @@ if prompt := st.chat_input("Zeptej se na cokoliv z historie firem..."):
             if 'text' in res['metadata']:
                 context += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
-        # 2. Odpověď přes GPT-4o
-       # 2. Odpověď přes GPT-4o s Grahamovou filozofií
-        if context:
-            system_prompt = """
-            Jsi MInBot, elitní finanční analytik a věrný žák Benjamina Grahama. 
-            Tvým úkolem je radit investorům striktně podle filozofie hodnotového investování.
+       # --- PROPOJENÍ S GOOGLE SHEETS (TVOJE PORTFOLIO) ---
+        # Upravené URL pro přímý export dat
+        SHEET_URL = "https://docs.google.com/spreadsheets/d/1gAp2_XHEiNzQB7uODtcK2FmLrEXFm2yQ0wPNo6sJTds/export?format=csv"
+        
+        def get_portfolio():
+            try:
+                # Načte aktuální data z tabulky přes pandas
+                df = pd.read_csv(SHEET_URL)
+                # Vyčistíme data (odstraníme prázdné řádky)
+                df = df.dropna(how='all')
+                return df.to_string(index=False)
+            except Exception as e:
+                return f"Data o portfoliu nejsou momentálně dostupná (Chyba: {e})"
+
+        portfolio_data = get_portfolio()
+
+        # 2. Odpověď přes GPT-4o s vědomím o tvém portfoliu i Grahamovi
+        if context or portfolio_data:
+            system_prompt = f"""
+            Jsi MInBot, elitní finanční analytik, osobní poradce a věrný žák Benjamina Grahama. 
+            Máš přístup k 'bibli' (Graham) a k aktuálnímu portfoliu uživatele v reálném čase.
             
-            ZDROJE ZNALOSTÍ:
-            Využívej POUZE přiložený kontext z knihy 'Inteligentní investor' (označený jako Bible).
+            AKTUÁLNÍ PORTFOLIO UŽIVATELE (z tvého Google Sheetu):
+            {portfolio_data}
             
-            TVOJE ZÁSADY:
-            1. VŽDY zdůrazňuj rozdíl mezi investicí a spekulací.
-            2. Pokud analyzuješ firmu, hledej 'bezpečnostní polštář' (Margin of Safety).
-            3. Na trh se dívej optikou 'Pana Trha' (Mr. Market).
-            4. Buď konzervativní, věcný a odkazuj na konkrétní myšlenky z textu.
-            5. Odpovídej vždy česky.
+            TVOJE PRAVIDLA:
+            1. Pokud se uživatel ptá na své akcie nebo celkovou hodnotu, vycházej z dat výše.
+            2. Vždy aplikuj Grahamovu filozofii (bezpečnostní polštář, vnitřní hodnota).
+            3. Pokud v portfoliu vidíš něco, co vypadá jako spekulace (vysoké P/E, chybějící zisk), upozorni na to podle Grahama.
+            4. Buď věcný, profesionální a odpovídej česky.
             """
 
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Kontext z tvé databáze:\n{context}\n\nOtázka investora: {prompt}"}
+                    {"role": "user", "content": f"Kontext z tvé databáze (Bible):\n{context}\n\nOtázka investora: {prompt}"}
                 ]
             )
             answer = response.choices[0].message.content
         else:
-            answer = "Bohužel, k tomuto tématu nemám v databázi žádné informace. Zkus nahrát příslušnou výroční zprávu."
-            
+            answer = "Bohužel nemám k dispozici žádná data v databázi ani v portfoliu."
+
         st.markdown(answer)
         st.session_state.messages.append({"role": "assistant", "content": answer})
+
 
 
 
