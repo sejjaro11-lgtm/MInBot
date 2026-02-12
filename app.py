@@ -5,12 +5,14 @@ from pinecone import Pinecone
 from sentence_transformers import SentenceTransformer
 import os
 from pypdf import PdfReader
+import yfinance as yf
+import re
 
 # --- 1. ZÁKLADNÍ NASTAVENÍ ---
 st.set_page_config(page_title="MInBot - Investiční Rádce", page_icon="📈", layout="wide")
 st.title("📈 MInBot - Investiční Rádce")
 
-# --- 2. NAČTENÍ KLÍČŮ PRO AI (SECRETS) ---
+# --- 2. NAČTENÍ KLÍČŮ (SECRETS) ---
 try:
     PINECONE_KEY = st.secrets["PINECONE_API_KEY"]
     OPENAI_KEY = st.secrets["OPENAI_API_KEY"]
@@ -29,22 +31,19 @@ def get_model():
 
 model = get_model()
 
-# --- 3. NAČTENÍ DAT Z GOOGLE SHEETS (Skrytě na pozadí) ---
+# --- 3. NAČTENÍ DAT Z GOOGLE SHEETS (Skrytě) ---
 SHEET_ID = "1gAp2_XHEiNzQB7uODtcK2FmLrEXFm2yQ0wPNo6sJTds"
 
 def load_google_sheet(sheet_name):
-    """Funkce pro přímé stažení listu jako CSV"""
     url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
     return pd.read_csv(url)
 
 portfolio_context = "" 
 
 try:
-    # Stahujeme data, ale už je NEVYPISUJEME na obrazovku
     df_portfolio = load_google_sheet("Portfolio")
     df_sledovane = load_google_sheet("Sledovane")
 
-    # Příprava dat pro bota (jen text do paměti)
     portfolio_txt = df_portfolio.to_string(index=False)
     sledovane_txt = df_sledovane.to_string(index=False)
     
@@ -52,26 +51,58 @@ try:
     DATA Z PORTFOLIA UŽIVATELE:
     {portfolio_txt}
     
-    DATA ZE SLEDOVANÝCH AKCIÍ:
+    DATA ZE SLEDOVANÝCH AKCIÍ A INDEXŮ:
     {sledovane_txt}
     """
-    # Pouze malá nenápadná hláška v rohu, že je vše OK (volitelné)
-    st.toast("✅ Data z trhů byla úspěšně načtena.", icon="📈")
+    # Tichá kontrola
+    print("Tabulky načteny OK")
 
 except Exception as e:
-    st.warning(f"⚠️ Nepodařilo se načíst data z tabulek. Zkontroluj Google Sheets. Chyba: {e}")
+    st.toast(f"⚠️ Nepodařilo se načíst tabulky: {e}", icon="⚠️")
 
 
-# --- 4. FUNKCE PRO UČENÍ (PDF) ---
+# --- 4. FUNKCE PRO VYKRESLENÍ GRAFU ---
+def plot_financial_data(ticker_symbol):
+    """Stáhne data z Yahoo Finance a vykreslí graf"""
+    try:
+        with st.spinner(f"Stahuji data pro {ticker_symbol}..."):
+            # Stáhneme data za maximum času (až 30 let)
+            data = yf.download(ticker_symbol, period="30y")
+            
+            if data.empty:
+                st.warning(f"Pro symbol {ticker_symbol} nebyla nalezena žádná data.")
+                return
+
+            # Vykreslení grafu
+            st.subheader(f"Vývoj ceny: {ticker_symbol} (Historie)")
+            # Použijeme 'Close' cenu. Pokud je to MultiIndex (nové verze yfinance), ošetříme to.
+            if isinstance(data.columns, pd.MultiIndex):
+                y_data = data['Close']
+            else:
+                y_data = data['Close']
+                
+            st.line_chart(y_data)
+            
+            # Zobrazení aktuální ceny a změny
+            last_price = float(y_data.iloc[-1])
+            first_price = float(y_data.iloc[0])
+            change = ((last_price - first_price) / first_price) * 100
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Aktuální cena", f"{last_price:.2f}")
+            col2.metric("Změna za zobrazené období", f"{change:.2f} %")
+            
+    except Exception as e:
+        st.error(f"Chyba při vykreslování grafu: {e}")
+
+# --- 5. FUNKCE PRO UČENÍ (PDF) ---
 def index_documents():
     data_dir = "data"
     if not os.path.exists(data_dir):
-        st.warning("Složka 'data' neexistuje.")
         return
     
     files = [f for f in os.listdir(data_dir) if f.endswith(".pdf")]
     if not files:
-        st.warning("Žádná PDF ve složce data.")
         return
 
     status = st.status("MInBot se učí...")
@@ -94,9 +125,8 @@ def index_documents():
                     "values": vector,
                     "metadata": {"text": chunk, "source": filename}
                 }])
-        except Exception as e:
-            st.error(f"Chyba u souboru {filename}: {e}")
-            
+        except Exception:
+            pass      
     status.update(label="✅ Učení dokončeno!", state="complete")
 
 with st.sidebar:
@@ -104,15 +134,22 @@ with st.sidebar:
     if st.button("Naučit se nové dokumenty"):
         index_documents()
 
-# --- 5. CHAT ---
+# --- 6. CHAT ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Vykreslení historie
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+    if msg["role"] == "assistant" and "chart_ticker" in msg:
+        # Pokud zpráva obsahovala graf, vykreslíme ho i v historii
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            plot_financial_data(msg["chart_ticker"])
+    else:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-if prompt := st.chat_input("Zeptej se mě..."):
+if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -126,25 +163,25 @@ if prompt := st.chat_input("Zeptej se mě..."):
             if 'text' in res['metadata']:
                 context_books += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
-        # TADY JSME ZMĚNILI OSOBNOST BOTA
+        # TADY JE MAGIE: Instrukce pro bota, aby uměl zavolat graf
         system_prompt = f"""
-        Jsi MInBot, zkušený a nekompromisní investiční analytik.
+        Jsi MInBot, nekompromisní investiční analytik s myšlením Benjamina Grahama.
         
-        Tvé myšlení je založeno na principech Benjamina Grahama (hledání vnitřní hodnoty, bezpečnostní marže, konzervativní přístup),
-        ALE tyto principy prezentuj jako SVÉ VLASTNÍ NÁZORY.
-        
-        ZNALOSTI (Knihy):
+        ZNALOSTI Z KNIH:
         {context_books}
         
-        DATA (Tabulky):
+        DATA Z TABULEK:
         {portfolio_context}
         
-        INSTRUKCE PRO TVÉ ODPOVĚDI:
-        1. NEPOUŽÍVEJ fráze jako "Podle Grahama", "Graham by řekl", "V knize se píše".
-        2. MLUV V PRVNÍ OSOBĚ: "Já to vidím takto...", "Nedoporučuji...", "Tato akcie je pro mě příliš drahá...".
-        3. Buď přímá. Pokud má akcie P/E nad 20 nebo 25, řekni rovnou, že je předražená a riskantní.
-        4. Vždy vycházej z čísel v tabulkách, pokud je máš k dispozici.
-        5. Odpovídej česky, stručně a expertně.
+        INSTRUKCE:
+        1. Analyzuj dotaz, používej "JÁ", buď přímá.
+        2. POKUD UŽIVATEL CHCE VIDĚT GRAF, VÝVOJ CENY NEBO HISTORII:
+           - Musíš identifikovat správný ticker pro Yahoo Finance (např. BTC-USD pro Bitcoin, ^GSPC pro S&P 500, AAPL pro Apple, ^IXIC pro Nasdaq).
+           - Na úplný konec své odpovědi vlož speciální značku: [[GRAF: TICKER]].
+           - Příklad: "Bitcoin je vysoce spekulativní. [[GRAF: BTC-USD]]"
+           - Příklad: "S&P 500 dlouhodobě roste. [[GRAF: ^GSPC]]"
+        3. Pokud se uživatel na graf neptá, značku nevkládej.
+        4. Komentuj volatilitu a dlouhodobý trend z pohledu hodnotového investora.
         """
 
         try:
@@ -155,11 +192,34 @@ if prompt := st.chat_input("Zeptej se mě..."):
                     {"role": "user", "content": prompt}
                 ]
             )
-            answer = response.choices[0].message.content
-            st.markdown(answer)
-            st.session_state.messages.append({"role": "assistant", "content": answer})
+            raw_answer = response.choices[0].message.content
+            
+            # Hledání značky pro graf
+            chart_match = re.search(r"\[\[GRAF: (.*?)\]\]", raw_answer)
+            chart_ticker = None
+            clean_answer = raw_answer
+            
+            if chart_match:
+                chart_ticker = chart_match.group(1) # Získáme ticker (např. BTC-USD)
+                clean_answer = raw_answer.replace(chart_match.group(0), "") # Odstraníme značku z textu
+            
+            # Zobrazení textové odpovědi
+            st.markdown(clean_answer)
+            
+            # Pokud bot poslal značku, vykreslíme graf
+            if chart_ticker:
+                plot_financial_data(chart_ticker)
+                
+            # Uložení do historie (včetně informace o grafu)
+            msg_data = {"role": "assistant", "content": clean_answer}
+            if chart_ticker:
+                msg_data["chart_ticker"] = chart_ticker
+            
+            st.session_state.messages.append(msg_data)
+
         except Exception as e:
-            st.error(f"Chyba OpenAI: {e}")
+            st.error(f"Chyba: {e}")
+
 
 
 
