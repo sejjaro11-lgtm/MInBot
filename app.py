@@ -54,8 +54,9 @@ try:
     DATA ZE SLEDOVANÝCH AKCIÍ A INDEXŮ:
     {sledovane_txt}
     """
-    # Tichá kontrola
-    print("Tabulky načteny OK")
+    
+    # --- ZDE JSME VRÁTILI TOAST (Potvrzovací bublinu) ---
+    st.toast("✅ Data z trhů byla úspěšně načtena.", icon="📈")
 
 except Exception as e:
     st.toast(f"⚠️ Nepodařilo se načíst tabulky: {e}", icon="⚠️")
@@ -65,33 +66,46 @@ except Exception as e:
 def plot_financial_data(ticker_symbol):
     """Stáhne data z Yahoo Finance a vykreslí graf"""
     try:
-        with st.spinner(f"Stahuji data pro {ticker_symbol}..."):
-            # Stáhneme data za maximum času (až 30 let)
-            data = yf.download(ticker_symbol, period="30y")
+        with st.spinner(f"Stahuji graf pro {ticker_symbol}..."):
+            # Stáhneme data
+            data = yf.download(ticker_symbol, period="20y", progress=False)
             
             if data.empty:
-                st.warning(f"Pro symbol {ticker_symbol} nebyla nalezena žádná data.")
+                st.error(f"Pro symbol {ticker_symbol} se nepodařilo stáhnout data. Zkuste jiný ticker.")
                 return
 
-            # Vykreslení grafu
-            st.subheader(f"Vývoj ceny: {ticker_symbol} (Historie)")
-            # Použijeme 'Close' cenu. Pokud je to MultiIndex (nové verze yfinance), ošetříme to.
+            # Ošetření formátu dat (pro novou verzi yfinance)
             if isinstance(data.columns, pd.MultiIndex):
                 y_data = data['Close']
             else:
                 y_data = data['Close']
-                
+            
+            # Vykreslení
+            st.subheader(f"📈 Vývoj ceny: {ticker_symbol}")
             st.line_chart(y_data)
             
-            # Zobrazení aktuální ceny a změny
-            last_price = float(y_data.iloc[-1])
-            first_price = float(y_data.iloc[0])
-            change = ((last_price - first_price) / first_price) * 100
-            
-            col1, col2 = st.columns(2)
-            col1.metric("Aktuální cena", f"{last_price:.2f}")
-            col2.metric("Změna za zobrazené období", f"{change:.2f} %")
-            
+            # Výpočet změny
+            try:
+                # Získáme konkrétní čísla (skalární hodnoty)
+                last_val = y_data.iloc[-1]
+                first_val = y_data.iloc[0]
+                
+                # Pokud je to série (kvůli MultiIndexu), vezmeme první hodnotu
+                if isinstance(last_val, pd.Series): last_val = last_val.iloc[0]
+                if isinstance(first_val, pd.Series): first_val = first_val.iloc[0]
+
+                last_price = float(last_val)
+                first_price = float(first_val)
+                
+                change = ((last_price - first_price) / first_price) * 100
+                
+                col1, col2 = st.columns(2)
+                col1.metric("Aktuální cena", f"{last_price:,.2f}")
+                col2.metric("Změna za zobrazené období", f"{change:+.2f} %")
+            except Exception as e:
+                # Kdyby selhal výpočet metriky, graf tam stále bude
+                print(f"Chyba metriky: {e}")
+
     except Exception as e:
         st.error(f"Chyba při vykreslování grafu: {e}")
 
@@ -141,7 +155,6 @@ if "messages" not in st.session_state:
 # Vykreslení historie
 for msg in st.session_state.messages:
     if msg["role"] == "assistant" and "chart_ticker" in msg:
-        # Pokud zpráva obsahovala graf, vykreslíme ho i v historii
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             plot_financial_data(msg["chart_ticker"])
@@ -163,9 +176,10 @@ if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
             if 'text' in res['metadata']:
                 context_books += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
-        # TADY JE MAGIE: Instrukce pro bota, aby uměl zavolat graf
+        # --- INSTRUKCE PRO BOTA (S OPRAVOU GRAFŮ) ---
         system_prompt = f"""
-        Jsi MInBot, nekompromisní investiční analytik s myšlením Benjamina Grahama.
+        Jsi MInBot, nekompromisní investiční analytik.
+        Tvá filozofie vychází z Benjamina Grahama, ALE NESMÍŠ HO CITOVAT.
         
         ZNALOSTI Z KNIH:
         {context_books}
@@ -174,14 +188,16 @@ if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
         {portfolio_context}
         
         INSTRUKCE:
-        1. Analyzuj dotaz, používej "JÁ", buď přímá.
-        2. POKUD UŽIVATEL CHCE VIDĚT GRAF, VÝVOJ CENY NEBO HISTORII:
-           - Musíš identifikovat správný ticker pro Yahoo Finance (např. BTC-USD pro Bitcoin, ^GSPC pro S&P 500, AAPL pro Apple, ^IXIC pro Nasdaq).
-           - Na úplný konec své odpovědi vlož speciální značku: [[GRAF: TICKER]].
-           - Příklad: "Bitcoin je vysoce spekulativní. [[GRAF: BTC-USD]]"
-           - Příklad: "S&P 500 dlouhodobě roste. [[GRAF: ^GSPC]]"
-        3. Pokud se uživatel na graf neptá, značku nevkládej.
-        4. Komentuj volatilitu a dlouhodobý trend z pohledu hodnotového investora.
+        1. MLUV VŽDY V PRVNÍ OSOBĚ ("Já si myslím", "Nedoporučuji").
+        2. ZÁKAZ používat fráze: "Podle Grahama", "Dle Benjamina Grahama". Místo toho řekni: "Dle mé analýzy", "Z pohledu hodnoty".
+        3. Pokud uživatel chce GRAF, musíš použít správný ETF ticker, aby data fungovala (Yahoo Finance neumí indexy s ^):
+           - PRO S&P 500 VŽDY POUŽIJ TICKER: SPY
+           - PRO NASDAQ VŽDY POUŽIJ TICKER: QQQ
+           - PRO DOW JONES VŽDY POUŽIJ TICKER: DIA
+           - Pro Bitcoin: BTC-USD
+           - Pro zlato: GLD
+        4. Na konec odpovědi vlož značku [[GRAF: TICKER]], pokud je graf relevantní.
+           Příklad: "S&P 500 dlouhodobě roste. [[GRAF: SPY]]"
         """
 
         try:
@@ -200,17 +216,17 @@ if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
             clean_answer = raw_answer
             
             if chart_match:
-                chart_ticker = chart_match.group(1) # Získáme ticker (např. BTC-USD)
-                clean_answer = raw_answer.replace(chart_match.group(0), "") # Odstraníme značku z textu
+                chart_ticker = chart_match.group(1)
+                clean_answer = raw_answer.replace(chart_match.group(0), "")
             
-            # Zobrazení textové odpovědi
+            # Zobrazení odpovědi
             st.markdown(clean_answer)
             
-            # Pokud bot poslal značku, vykreslíme graf
+            # Vykreslení grafu
             if chart_ticker:
                 plot_financial_data(chart_ticker)
                 
-            # Uložení do historie (včetně informace o grafu)
+            # Uložení
             msg_data = {"role": "assistant", "content": clean_answer}
             if chart_ticker:
                 msg_data["chart_ticker"] = chart_ticker
@@ -219,6 +235,7 @@ if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
 
         except Exception as e:
             st.error(f"Chyba: {e}")
+
 
 
 
