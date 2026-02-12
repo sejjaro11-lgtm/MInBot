@@ -55,7 +55,7 @@ try:
     {sledovane_txt}
     """
     
-    # --- ZDE JSME VRÁTILI TOAST (Potvrzovací bublinu) ---
+    # Zde je opravená hláška, která ti potvrdí načtení dat
     st.toast("✅ Data z trhů byla úspěšně načtena.", icon="📈")
 
 except Exception as e:
@@ -74,7 +74,7 @@ def plot_financial_data(ticker_symbol):
                 st.error(f"Pro symbol {ticker_symbol} se nepodařilo stáhnout data. Zkuste jiný ticker.")
                 return
 
-            # Ošetření formátu dat (pro novou verzi yfinance)
+            # Ošetření formátu dat
             if isinstance(data.columns, pd.MultiIndex):
                 y_data = data['Close']
             else:
@@ -84,13 +84,11 @@ def plot_financial_data(ticker_symbol):
             st.subheader(f"📈 Vývoj ceny: {ticker_symbol}")
             st.line_chart(y_data)
             
-            # Výpočet změny
+            # Výpočet změny (ošetření pro různé formáty vrácené yfinance)
             try:
-                # Získáme konkrétní čísla (skalární hodnoty)
                 last_val = y_data.iloc[-1]
                 first_val = y_data.iloc[0]
                 
-                # Pokud je to série (kvůli MultiIndexu), vezmeme první hodnotu
                 if isinstance(last_val, pd.Series): last_val = last_val.iloc[0]
                 if isinstance(first_val, pd.Series): first_val = first_val.iloc[0]
 
@@ -103,7 +101,6 @@ def plot_financial_data(ticker_symbol):
                 col1.metric("Aktuální cena", f"{last_price:,.2f}")
                 col2.metric("Změna za zobrazené období", f"{change:+.2f} %")
             except Exception as e:
-                # Kdyby selhal výpočet metriky, graf tam stále bude
                 print(f"Chyba metriky: {e}")
 
     except Exception as e:
@@ -176,10 +173,9 @@ if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
             if 'text' in res['metadata']:
                 context_books += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
-        # --- INSTRUKCE PRO BOTA (S OPRAVOU GRAFŮ) ---
+        # --- UPDATE INSTRUKCÍ: STRIKTNÍ PRAVIDLA PRO GRAFY ---
         system_prompt = f"""
         Jsi MInBot, nekompromisní investiční analytik.
-        Tvá filozofie vychází z Benjamina Grahama, ALE NESMÍŠ HO CITOVAT.
         
         ZNALOSTI Z KNIH:
         {context_books}
@@ -188,16 +184,23 @@ if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
         {portfolio_context}
         
         INSTRUKCE:
-        1. MLUV VŽDY V PRVNÍ OSOBĚ ("Já si myslím", "Nedoporučuji").
-        2. ZÁKAZ používat fráze: "Podle Grahama", "Dle Benjamina Grahama". Místo toho řekni: "Dle mé analýzy", "Z pohledu hodnoty".
-        3. Pokud uživatel chce GRAF, musíš použít správný ETF ticker, aby data fungovala (Yahoo Finance neumí indexy s ^):
-           - PRO S&P 500 VŽDY POUŽIJ TICKER: SPY
-           - PRO NASDAQ VŽDY POUŽIJ TICKER: QQQ
-           - PRO DOW JONES VŽDY POUŽIJ TICKER: DIA
-           - Pro Bitcoin: BTC-USD
-           - Pro zlato: GLD
-        4. Na konec odpovědi vlož značku [[GRAF: TICKER]], pokud je graf relevantní.
-           Příklad: "S&P 500 dlouhodobě roste. [[GRAF: SPY]]"
+        1. MLUV VŽDY V PRVNÍ OSOBĚ ("Já si myslím", "Nedoporučuji"). Nikdy necituj "Podle Grahama".
+        
+        2. PRAVIDLA PRO VYKRESLOVÁNÍ GRAFŮ (STRIKTNÍ!):
+           - Značku [[GRAF: TICKER]] vlož na konec POUZE tehdy, pokud uživatel EXPLICITNĚ požádá o: "graf", "vývoj", "historii", "trend" nebo "ukázat v čase".
+           - Pokud se uživatel ptá JEN na "aktuální cenu", "hodnotu", "kolik stojí" nebo "info o akcii":
+             -> NAPIŠ JEN ODPOVĚĎ. NEVKLÁDEJ ŽÁDNOU ZNAČKU PRO GRAF.
+        
+        3. Pokud uživatel chce graf, použij správný ETF ticker:
+           - S&P 500 -> SPY
+           - NASDAQ -> QQQ
+           - DOW JONES -> DIA
+           - Bitcoin -> BTC-USD
+           - Zlato -> GLD
+        
+        4. Příklad správného chování:
+           - Uživatel: "Kolik stojí Apple?" -> Ty: "Aktuální cena Apple je 180 USD." (BEZ GRAFU)
+           - Uživatel: "Ukaž mi vývoj Apple." -> Ty: "Zde je historie vývoje ceny. [[GRAF: AAPL]]"
         """
 
         try:
@@ -222,7 +225,7 @@ if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
             # Zobrazení odpovědi
             st.markdown(clean_answer)
             
-            # Vykreslení grafu
+            # Vykreslení grafu (pouze pokud ho AI schválila)
             if chart_ticker:
                 plot_financial_data(chart_ticker)
                 
@@ -235,6 +238,7 @@ if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
 
         except Exception as e:
             st.error(f"Chyba: {e}")
+
 
 
 
