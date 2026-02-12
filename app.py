@@ -61,80 +61,89 @@ except Exception as e:
     st.toast(f"⚠️ Nepodařilo se načíst tabulky: {e}", icon="⚠️")
 
 
-# --- 4. VYLEPŠENÁ FUNKCE PRO VYKRESLENÍ GRAFU ---
-def plot_financial_data(ticker_symbol, start_year=None, end_year=None):
+# --- 4. FUNKCE PRO VYKRESLENÍ A ANALÝZU GRAFU ---
+def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
     """
-    Stáhne MAXIMÁLNÍ historii a ořízne ji podle přání uživatele.
+    Stáhne data, vykreslí graf a vrátí statistický souhrn pro AI.
     """
+    stats_summary = None # Textová analýza pro mozek bota
+    
     try:
-        with st.spinner(f"Stahuji a filtruji data pro {ticker_symbol}..."):
-            # VŽDY stahujeme 'max' historii, abychom měli data od IPO (např. 1980)
+        with st.spinner(f"Analyzuji data pro {ticker_symbol}..."):
+            # Stahujeme 'max' historii
             data = yf.download(ticker_symbol, period="max", progress=False)
             
             if data.empty:
-                st.error(f"Pro symbol {ticker_symbol} se nepodařilo stáhnout data.")
-                return
+                st.error(f"Pro symbol {ticker_symbol} nejsou data.")
+                return None
 
-            # Ošetření formátu dat (MultiIndex vs Single Index)
+            # Ošetření formátů
             if isinstance(data.columns, pd.MultiIndex):
                 y_data = data['Close']
             else:
                 y_data = data['Close']
             
-            # Ošetření Series vs DataFrame
             if isinstance(y_data, pd.DataFrame):
-                # Pokud yfinance vrátí DataFrame i pro jeden sloupec, převedeme na Series
                 y_data = y_data.iloc[:, 0]
 
-            # --- FILTROVÁNÍ PODLE ROKŮ ---
-            # Pokud uživatel zadal roky, ořízneme data
+            # --- FILTROVÁNÍ ---
             if start_year and start_year.isdigit():
                 y_data = y_data[y_data.index.year >= int(start_year)]
-            
             if end_year and end_year.isdigit():
                 y_data = y_data[y_data.index.year <= int(end_year)]
 
             if y_data.empty:
-                st.warning(f"Pro zadané období {start_year}-{end_year} nejsou data dostupná.")
-                return
+                st.warning(f"Žádná data pro období {start_year}-{end_year}.")
+                return None
 
-            # Vykreslení
+            # --- VYKRESLENÍ GRAFU ---
             title_text = f"📈 Vývoj ceny: {ticker_symbol}"
-            if start_year:
-                title_text += f" (od roku {start_year})"
-            if end_year:
-                title_text += f" (do roku {end_year})"
+            if start_year: title_text += f" (od {start_year})"
+            if end_year: title_text += f" (do {end_year})"
                 
             st.subheader(title_text)
             st.line_chart(y_data)
             
-            # Výpočet změny za ZOBRAZENÉ období
+            # --- VÝPOČET STATISTIK PRO UŽIVATELE ---
             try:
                 last_price = float(y_data.iloc[-1])
                 first_price = float(y_data.iloc[0])
-                change = ((last_price - first_price) / first_price) * 100
+                change_pct = ((last_price - first_price) / first_price) * 100
                 
-                col1, col2 = st.columns(2)
-                col1.metric("Cena na konci období", f"{last_price:,.2f}")
-                col2.metric("Změna za vybrané období", f"{change:+.2f} %")
-            except Exception as e:
-                print(f"Chyba metriky: {e}")
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Cena na konci", f"{last_price:,.2f}")
+                col2.metric("Změna", f"{change_pct:+.2f} %")
+                col3.metric("Nejvyšší bod (ATH)", f"{float(y_data.max()):,.2f}")
+            except Exception:
+                pass
 
+            # --- GENERUJEME "PAMĚŤ" PRO BOTA ---
+            # Toto je to kouzlo: převedeme graf na text, který si AI přečte
+            stats_summary = f"""
+            [SYSTÉMOVÁ POZNÁMKA - VÝSLEDEK ANALÝZY GRAFU PRO {ticker_symbol}]
+            Zobrazené období: {start_year if start_year else 'Začátek'} - {end_year if end_year else 'Dnes'}
+            Počáteční cena: {first_price:.2f}
+            Konečná cena: {last_price:.2f}
+            Celková změna: {change_pct:.2f}%
+            Historické maximum (High): {float(y_data.max()):.2f} v roce {y_data.idxmax().year}
+            Historické minimum (Low): {float(y_data.min()):.2f} v roce {y_data.idxmin().year}
+            """
+            
     except Exception as e:
-        st.error(f"Chyba při vykreslování grafu: {e}")
+        st.error(f"Chyba grafu: {e}")
+        return None
+        
+    return stats_summary
 
 # --- 5. FUNKCE PRO UČENÍ (PDF) ---
 def index_documents():
     data_dir = "data"
-    if not os.path.exists(data_dir):
-        return
-    
+    if not os.path.exists(data_dir): return
     files = [f for f in os.listdir(data_dir) if f.endswith(".pdf")]
-    if not files:
-        return
-
+    if not files: return
     status = st.status("MInBot se učí...")
     for filename in files:
+        # ... (zde zůstává stejný kód pro PDF) ...
         try:
             path = os.path.join(data_dir, filename)
             reader = PdfReader(path)
@@ -142,19 +151,12 @@ def index_documents():
             for page in reader.pages:
                 extract = page.extract_text()
                 if extract: text += extract + " "
-            
             chunk_size = 1000
             chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size - 100)]
-            
             for i, chunk in enumerate(chunks):
                 vector = model.encode(chunk).tolist()
-                index.upsert(vectors=[{
-                    "id": f"{filename}_{i}",
-                    "values": vector,
-                    "metadata": {"text": chunk, "source": filename}
-                }])
-        except Exception:
-            pass      
+                index.upsert(vectors=[{"id": f"{filename}_{i}", "values": vector, "metadata": {"text": chunk, "source": filename}}])
+        except Exception: pass      
     status.update(label="✅ Učení dokončeno!", state="complete")
 
 with st.sidebar:
@@ -171,10 +173,10 @@ for msg in st.session_state.messages:
     if msg["role"] == "assistant" and "chart_data" in msg:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-            # Rozbalení uložených dat pro graf
             c_ticker, c_start, c_end = msg["chart_data"]
-            plot_financial_data(c_ticker, c_start, c_end)
-    else:
+            # Znovu vykreslíme graf, ale statistiky už neukládáme (jsou v historii)
+            analyze_and_plot(c_ticker, c_start, c_end)
+    elif msg["role"] != "system": # Systémové zprávy uživateli neukazujeme
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
@@ -192,7 +194,6 @@ if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
             if 'text' in res['metadata']:
                 context_books += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
-        # --- NOVÉ CHYTŘEJŠÍ INSTRUKCE PRO DATA ---
         system_prompt = f"""
         Jsi MInBot, investiční analytik s myšlením Benjamina Grahama.
         
@@ -203,68 +204,48 @@ if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
         {portfolio_context}
         
         INSTRUKCE:
-        1. MLUV VŽDY V PRVNÍ OSOBĚ. Necituj "Podle Grahama".
-        
-        2. PRAVIDLA PRO GRAFY (DŮLEŽITÉ):
-           - Pokud uživatel chce graf, MUSÍŠ zjistit, jestli zmínil konkrétní roky (např. "od 1996 do 2023").
-           - Na konec odpovědi vlož značku v tomto formátu: [[GRAF: TICKER | START_ROK | KONEC_ROK]]
-           
-           PŘÍKLADY ZNAČEK:
-           - "Ukaž graf Apple": [[GRAF: AAPL | | ]]  (žádné roky = celá historie)
-           - "Graf Apple od 1996 do 2023": [[GRAF: AAPL | 1996 | 2023]]
-           - "Graf Apple od roku 2010": [[GRAF: AAPL | 2010 | ]]
-           
-           TICKERY: S&P 500 -> SPY, Nasdaq -> QQQ, Dow -> DIA, Bitcoin -> BTC-USD.
-        
-        3. Pokud uživatel chce jen cenu ("kolik stojí"), graf nevkládej.
+        1. MLUV V PRVNÍ OSOBĚ.
+        2. Pokud chce uživatel graf, vlož na konec značku: [[GRAF: TICKER | START | END]]
+           - S&P 500 -> SPY, Nasdaq -> QQQ, Dow -> DIA, Bitcoin -> BTC-USD
+        3. Pokud jsi v předchozím kroku viděla "SYSTÉMOVÁ POZNÁMKA", používej tato data k odpovědím na otázky o grafu.
         """
 
         try:
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt}
-                ]
+                    {"role": "system", "content": system_prompt}
+                ] + st.session_state.messages # Posíláme celou historii vč. skrytých dat
             )
             raw_answer = response.choices[0].message.content
             
-            # --- ZPRACOVÁNÍ ODPOVĚDI A PARSOVÁNÍ ROKŮ ---
-            # Hledáme formát [[GRAF: TICKER | START | END]]
+            # Zpracování odpovědi a grafu
             chart_match = re.search(r"\[\[GRAF: (.*?)\]\]", raw_answer)
-            
-            chart_ticker = None
-            start_year = None
-            end_year = None
+            chart_ticker = None; start_year = None; end_year = None
             clean_answer = raw_answer
             
+            stats_context = None # Zde uložíme "paměť" grafu
+
             if chart_match:
-                content = chart_match.group(1) # Získáme vnitřek: "AAPL | 1996 | 2023"
-                clean_answer = raw_answer.replace(chart_match.group(0), "") # Smažeme značku z textu
-                
-                # Rozdělíme podle svislítka
+                content = chart_match.group(1)
+                clean_answer = raw_answer.replace(chart_match.group(0), "")
                 parts = [p.strip() for p in content.split('|')]
-                
-                if len(parts) >= 1:
-                    chart_ticker = parts[0]
-                if len(parts) >= 2:
-                    start_year = parts[1] if parts[1] else None
-                if len(parts) >= 3:
-                    end_year = parts[2] if parts[2] else None
+                if len(parts) >= 1: chart_ticker = parts[0]
+                if len(parts) >= 2: start_year = parts[1] if parts[1] else None
+                if len(parts) >= 3: end_year = parts[2] if parts[2] else None
             
-            # Zobrazení odpovědi
             st.markdown(clean_answer)
             
-            # Vykreslení grafu s parametry
+            # Vykreslení + Získání "paměti"
             if chart_ticker:
-                plot_financial_data(chart_ticker, start_year, end_year)
+                stats_context = analyze_and_plot(chart_ticker, start_year, end_year)
                 
-            # Uložení do historie (ukládáme si i ty roky, aby graf zůstal stejný i po obnovení)
-            msg_data = {"role": "assistant", "content": clean_answer}
-            if chart_ticker:
-                msg_data["chart_data"] = (chart_ticker, start_year, end_year)
+            # Uložení zpráv
+            st.session_state.messages.append({"role": "assistant", "content": clean_answer, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
             
-            st.session_state.messages.append(msg_data)
+            # POKUD MÁME DATA Z GRAFU, ULOŽÍME JE JAKO SKRYTOU ZPRÁVU PRO BOTA
+            if stats_context:
+                st.session_state.messages.append({"role": "system", "content": stats_context})
 
         except Exception as e:
             st.error(f"Chyba: {e}")
