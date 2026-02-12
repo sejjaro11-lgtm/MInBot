@@ -1,5 +1,4 @@
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import openai
 from pinecone import Pinecone
@@ -9,9 +8,9 @@ from pypdf import PdfReader
 
 # --- 1. ZÁKLADNÍ NASTAVENÍ ---
 st.set_page_config(page_title="MInBot - Investiční Rádce", page_icon="📈", layout="wide")
-st.title("📈 MInBot - Investiční Rádce")  # Opravený nadpis
+st.title("📈 MInBot - Investiční Rádce")
 
-# --- 2. NAČTENÍ KLÍČŮ (SECRETS) ---
+# --- 2. NAČTENÍ KLÍČŮ PRO AI (SECRETS) ---
 try:
     PINECONE_KEY = st.secrets["PINECONE_API_KEY"]
     OPENAI_KEY = st.secrets["OPENAI_API_KEY"]
@@ -30,15 +29,23 @@ def get_model():
 
 model = get_model()
 
-# --- 3. NAČTENÍ DAT Z GOOGLE SHEETS ---
-conn = st.connection("gsheets", type=GSheetsConnection)
+# --- 3. NAČTENÍ DAT Z GOOGLE SHEETS (Metoda "Hrubá síla") ---
+# Tady jsme změnili strategii. Místo složitého připojení stahujeme data přímo.
+
+# Tvoje ID tabulky (získané z tvého odkazu)
+SHEET_ID = "1gAp2_XHEiNzQB7uODtcK2FmLrEXFm2yQ0wPNo6sJTds"
+
+def load_google_sheet(sheet_name):
+    """Funkce pro přímé stažení listu jako CSV"""
+    url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
+    return pd.read_csv(url)
+
 portfolio_context = "" 
 
 try:
-    # Zde používáme nové názvy listů bez mezer!
-    # UJISTI SE, ŽE JSI PŘEJMENOVAL LISTY V GOOGLE SHEETS NA 'Portfolio' A 'Sledovane'
-    df_portfolio = conn.read(worksheet="Portfolio")
-    df_sledovane = conn.read(worksheet="Sledovane")
+    # Stahujeme data přímo přes Pandas (tohle obejde chybu 400)
+    df_portfolio = load_google_sheet("Portfolio")
+    df_sledovane = load_google_sheet("Sledovane")
 
     with st.expander("📂 Klikni zde pro zobrazení tvých tabulek"):
         st.subheader("Aktuální Portfolio")
@@ -57,11 +64,10 @@ try:
     DATA ZE SLEDOVANÝCH AKCIÍ:
     {sledovane_txt}
     """
-    st.success("✅ Tabulky načteny.")
+    st.success("✅ Tabulky načteny! (Použita metoda přímého exportu)")
 
 except Exception as e:
-    # Pokud se to nepovede, vypíšeme chybu, ale nespadneme
-    st.warning(f"⚠️ Nepodařilo se načíst tabulky. Zkontroluj, zda jsi přejmenoval listy na 'Portfolio' a 'Sledovane'. Chyba: {e}")
+    st.warning(f"⚠️ Nepodařilo se načíst tabulky. Zkontroluj, zda se listy jmenují přesně 'Portfolio' a 'Sledovane' a zda je tabulka veřejná. Chyba: {e}")
 
 
 # --- 4. FUNKCE PRO UČENÍ (PDF) ---
@@ -114,7 +120,6 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Opravený placeholder v poli pro otázku
 if prompt := st.chat_input("Zeptej se mě..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -157,6 +162,7 @@ if prompt := st.chat_input("Zeptej se mě..."):
             st.session_state.messages.append({"role": "assistant", "content": answer})
         except Exception as e:
             st.error(f"Chyba OpenAI: {e}")
+
 
 
 
