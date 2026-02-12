@@ -4,5 +4,6 @@ pypdf
 sentence-transformers
 torch
 pinecone
-streamlit-gsheets
+st-gsheets-connection
+pandas
 
