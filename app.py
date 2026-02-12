@@ -97,19 +97,41 @@ if prompt := st.chat_input("Zeptej se na cokoliv z historie firem..."):
 
        # --- PROPOJENÍ S GOOGLE SHEETS (TVOJE PORTFOLIO) ---
         # Upravené URL pro přímý export dat
-        SHEET_URL = "https://docs.google.com/spreadsheets/d/1gAp2_XHEiNzQB7uODtcK2FmLrEXFm2yQ0wPNo6sJTds/export?format=csv"
-        
-        def get_portfolio():
-            try:
-                # Načte aktuální data z tabulky přes pandas
-                df = pd.read_csv(SHEET_URL)
-                # Vyčistíme data (odstraníme prázdné řádky)
-                df = df.dropna(how='all')
-                return df.to_string(index=False)
-            except Exception as e:
-                return f"Data o portfoliu nejsou momentálně dostupná (Chyba: {e})"
+       import streamlit as st
+from streamlit_gsheets import GSheetsConnection
+import pandas as pd
 
-        portfolio_data = get_portfolio()
+# Nastavení stránky
+st.set_page_config(page_title="MiniBot Investiční Architekt", layout="wide")
+
+st.title("📊 MiniBot: Tvůj Investiční Analytik")
+
+# 1. Propojení s Google Sheets
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+try:
+    # Načtení obou listů
+    # Ujisti se, že názvy v worksheet přesně odpovídají názvům listů v Google Sheets
+    df_portfolio = conn.read(worksheet="Mé portfolium")
+    df_sledovane = conn.read(worksheet="Sledované akcie")
+
+    # Zobrazení dat v aplikaci pro kontrolu
+    st.subheader("Aktuální Portfolio")
+    st.dataframe(df_portfolio)
+
+    st.subheader("Sledované Akcie (Grahamův filtr)")
+    st.dataframe(df_sledovane)
+
+    # Tady se bude dít ta "Grahamovská" magie
+    # Bot si nyní může vzít data z obou tabulek
+    
+    st.success("Data z obou listů byla úspěšně načtena!")
+
+except Exception as e:
+    st.error(f"Chyba při načítání tabulky: {e}")
+    st.info("Zkontroluj, zda se listy v Google Sheets jmenují přesně 'Mé portfolium' a 'Sledované akcie'.")
+
+# --- Zde bude pokračovat zbytek tvého kódu pro chatování s AI ---
 
         # 2. Odpověď přes GPT-4o s vědomím o tvém portfoliu i Grahamovi
         if context or portfolio_data:
@@ -140,6 +162,7 @@ if prompt := st.chat_input("Zeptej se na cokoliv z historie firem..."):
 
         st.markdown(answer)
         st.session_state.messages.append({"role": "assistant", "content": answer})
+
 
 
 
