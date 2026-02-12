@@ -1,167 +1,174 @@
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
+import pandas as pd
 import openai
 from pinecone import Pinecone
 from sentence_transformers import SentenceTransformer
 import os
 from pypdf import PdfReader
-import pandas as pd     # Tento řádek přidej
-import requests      # Tento řádek přidej
 
-# --- NASTAVENÍ ---
-st.set_page_config(page_title="MInBot", page_icon="📈", layout="wide")
-st.title("📈 MInBot - Investiční Rádce")
+# --- 1. ZÁKLADNÍ NASTAVENÍ (Musí být vždy první) ---
+st.set_page_config(page_title="MInBot - Investiční Rádce", page_icon="📈", layout="wide")
+st.title("📈 MInBot - Investiční Architekt")
 
-# Načtení klíčů ze Secrets
+# --- 2. NAČTENÍ KLÍČŮ (SECRETS) ---
 try:
     PINECONE_KEY = st.secrets["PINECONE_API_KEY"]
     OPENAI_KEY = st.secrets["OPENAI_API_KEY"]
-except:
-    st.error("Chybí API klíče! Zkontroluj nastavení Secrets ve Streamlitu.")
+    # Inicializace klientů
+    pc = Pinecone(api_key=PINECONE_KEY)
+    client = openai.OpenAI(api_key=OPENAI_KEY)
+    index_name = "minbot-index"
+    index = pc.Index(index_name)
+except Exception as e:
+    st.error(f"Chyba v klíčích nebo připojení k AI: {e}")
     st.stop()
 
-# Inicializace
-pc = Pinecone(api_key=PINECONE_KEY)
-client = openai.OpenAI(api_key=OPENAI_KEY)
-index_name = "minbot-index"
-index = pc.Index(index_name)
-
+# Inicializace modelu pro embedování
 @st.cache_resource
 def get_model():
     return SentenceTransformer('all-MiniLM-L6-v2')
 
 model = get_model()
 
-# --- FUNKCE PRO UČENÍ ---
+# --- 3. NAČTENÍ DAT Z GOOGLE SHEETS ---
+# Toto je ta nová část, která načte tvé portfolio a sledované akcie
+conn = st.connection("gsheets", type=GSheetsConnection)
+portfolio_context = "" # Proměnná pro textovou podobu tabulky
+
+try:
+    # Načtení obou listů
+    df_portfolio = conn.read(worksheet="Mé portfolium")
+    df_sledovane = conn.read(worksheet="Sledované akcie")
+
+    # Zobrazíme data v "balónku", aby nezabírala místo, ale šla zkontrolovat
+    with st.expander("📂 Klikni zde pro zobrazení tvých tabulek (Portfolio & Sledované)"):
+        st.subheader("Aktuální Portfolio")
+        st.dataframe(df_portfolio)
+        st.subheader("Sledované Akcie (Grahamův filtr)")
+        st.dataframe(df_sledovane)
+
+    # Převedeme tabulky na text, aby si je AI mohla přečíst
+    portfolio_txt = df_portfolio.to_string(index=False)
+    sledovane_txt = df_sledovane.to_string(index=False)
+    
+    # Vytvoříme kontext pro bota
+    portfolio_context = f"""
+    DATA Z UŽIVATELOVA PORTFOLIA:
+    {portfolio_txt}
+    
+    DATA ZE SLEDOVANÝCH AKCIÍ:
+    {sledovane_txt}
+    """
+    st.success("✅ Tabulky úspěšně načteny a propojeny s mozkem bota.")
+
+except Exception as e:
+    st.warning(f"Nepodařilo se načíst Google Sheets (bot pojede bez nich). Chyba: {e}")
+
+
+# --- 4. FUNKCE PRO UČENÍ (PDF) ---
 def index_documents():
     data_dir = "data"
     if not os.path.exists(data_dir):
-        st.error("Složka 'data' neexistuje. Vytvoř ji na GitHubu.")
+        st.warning("Složka 'data' neexistuje.")
         return
     
     files = [f for f in os.listdir(data_dir) if f.endswith(".pdf")]
     if not files:
-        st.warning("Složka 'data' je prázdná. Nahraj tam PDF soubory.")
+        st.warning("Žádná PDF ve složce data.")
         return
 
     status = st.status("MInBot se učí z nových dokumentů...")
     for filename in files:
-        path = os.path.join(data_dir, filename)
-        reader = PdfReader(path)
-        text = ""
-        for page in reader.pages:
-            extract = page.extract_text()
-            if extract: text += extract + " "
-        
-        # Rozsekání a uložení
-        chunk_size = 1000
-        chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size - 100)]
-        
-        for i, chunk in enumerate(chunks):
-            vector = model.encode(chunk).tolist()
-            # Uložení do Pinecone
-            index.upsert(vectors=[{
-                "id": f"{filename}_{i}",
-                "values": vector,
-                "metadata": {"text": chunk, "source": filename}
-            }])
+        try:
+            path = os.path.join(data_dir, filename)
+            reader = PdfReader(path)
+            text = ""
+            for page in reader.pages:
+                extract = page.extract_text()
+                if extract: text += extract + " "
+            
+            # Rozsekání a uložení
+            chunk_size = 1000
+            chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size - 100)]
+            
+            for i, chunk in enumerate(chunks):
+                vector = model.encode(chunk).tolist()
+                index.upsert(vectors=[{
+                    "id": f"{filename}_{i}",
+                    "values": vector,
+                    "metadata": {"text": chunk, "source": filename}
+                }])
+        except Exception as e:
+            st.error(f"Chyba u souboru {filename}: {e}")
+            
     status.update(label="✅ Učení dokončeno! Data jsou uložena v 'mozku'.", state="complete")
 
 # Tlačítko v bočním panelu
 with st.sidebar:
-    st.header("Správa znalostí")
-    if st.button("Aktualizovat znalosti z GitHubu"):
+    st.header("🧠 Správa znalostí")
+    if st.button("Naučit se nové dokumenty z GitHubu"):
         index_documents()
 
-# --- CHAT ---
+# --- 5. CHAT S GRAHAMEM ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Vypisování historie chatu
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if prompt := st.chat_input("Zeptej se na cokoliv z historie firem..."):
+# Hlavní logika odpovědi
+if prompt := st.chat_input("Zeptej se Grahama na své portfolio..."):
+    # 1. Uložení dotazu
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        # 1. Hledání v Pinecone
+        # 2. Hledání v Pinecone (Knihy/PDF)
         query_vector = model.encode(prompt).tolist()
-        results = index.query(vector=query_vector, top_k=5, include_metadata=True)
+        results = index.query(vector=query_vector, top_k=3, include_metadata=True)
         
-        context = ""
+        context_books = ""
         for res in results['matches']:
             if 'text' in res['metadata']:
-                context += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
+                context_books += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
-       # --- PROPOJENÍ S GOOGLE SHEETS (TVOJE PORTFOLIO) ---
-        # Upravené URL pro přímý export dat
-       import streamlit as st
-from streamlit_gsheets import GSheetsConnection
-import pandas as pd
+        # 3. Sestavení instrukce pro GPT-4o (Knihy + Tabulky + Persona)
+        system_prompt = f"""
+        Jsi MInBot, investiční architekt a přísný následovník Benjamina Grahama.
+        
+        Máš k dispozici dva zdroje informací:
+        1. ZNALOSTI Z KNIH (Pinecone):
+        {context_books}
+        
+        2. UŽIVATELOVY TABULKY (Google Sheets):
+        {portfolio_context}
+        
+        INSTRUKCE:
+        - Analyzuj uživatelův dotaz na základě Grahamových principů (Margin of Safety, P/E < 15, P/B < 1.5).
+        - Pokud se uživatel ptá na akcii ze svého portfolia, najdi ji v datech tabulky a komentuj její aktuální stav.
+        - Pokud data v tabulce chybí (např. P/E je 0 nebo NaN), upozorni na to, ale zkus odhadnout situaci podle obecných znalostí.
+        - Odpovídej česky, stručně a expertně.
+        """
 
-# Nastavení stránky
-st.set_page_config(page_title="MiniBot Investiční Architekt", layout="wide")
-
-st.title("📊 MiniBot: Tvůj Investiční Analytik")
-
-# 1. Propojení s Google Sheets
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-try:
-    # Načtení obou listů
-    # Ujisti se, že názvy v worksheet přesně odpovídají názvům listů v Google Sheets
-    df_portfolio = conn.read(worksheet="Mé portfolium")
-    df_sledovane = conn.read(worksheet="Sledované akcie")
-
-    # Zobrazení dat v aplikaci pro kontrolu
-    st.subheader("Aktuální Portfolio")
-    st.dataframe(df_portfolio)
-
-    st.subheader("Sledované Akcie (Grahamův filtr)")
-    st.dataframe(df_sledovane)
-
-    # Tady se bude dít ta "Grahamovská" magie
-    # Bot si nyní může vzít data z obou tabulek
-    
-    st.success("Data z obou listů byla úspěšně načtena!")
-
-except Exception as e:
-    st.error(f"Chyba při načítání tabulky: {e}")
-    st.info("Zkontroluj, zda se listy v Google Sheets jmenují přesně 'Mé portfolium' a 'Sledované akcie'.")
-
-# --- Zde bude pokračovat zbytek tvého kódu pro chatování s AI ---
-
-        # 2. Odpověď přes GPT-4o s vědomím o tvém portfoliu i Grahamovi
-        if context or portfolio_data:
-            system_prompt = f"""
-            Jsi MInBot, elitní finanční analytik, osobní poradce a věrný žák Benjamina Grahama. 
-            Máš přístup k 'bibli' (Graham) a k aktuálnímu portfoliu uživatele v reálném čase.
-            
-            AKTUÁLNÍ PORTFOLIO UŽIVATELE (z tvého Google Sheetu):
-            {portfolio_data}
-            
-            TVOJE PRAVIDLA:
-            1. Pokud se uživatel ptá na své akcie nebo celkovou hodnotu, vycházej z dat výše.
-            2. Vždy aplikuj Grahamovu filozofii (bezpečnostní polštář, vnitřní hodnota).
-            3. Pokud v portfoliu vidíš něco, co vypadá jako spekulace (vysoké P/E, chybějící zisk), upozorni na to podle Grahama.
-            4. Buď věcný, profesionální a odpovídej česky.
-            """
-
+        # 4. Volání AI
+        try:
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Kontext z tvé databáze (Bible):\n{context}\n\nOtázka investora: {prompt}"}
+                    {"role": "user", "content": prompt}
                 ]
             )
             answer = response.choices[0].message.content
-        else:
-            answer = "Bohužel nemám k dispozici žádná data v databázi ani v portfoliu."
+            st.markdown(answer)
+            st.session_state.messages.append({"role": "assistant", "content": answer})
+        except Exception as e:
+            st.error(f"Chyba při komunikaci s OpenAI: {e}")
 
-        st.markdown(answer)
-        st.session_state.messages.append({"role": "assistant", "content": answer})
 
 
 
