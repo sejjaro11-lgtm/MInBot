@@ -29,10 +29,7 @@ def get_model():
 
 model = get_model()
 
-# --- 3. NAČTENÍ DAT Z GOOGLE SHEETS (Metoda "Hrubá síla") ---
-# Tady jsme změnili strategii. Místo složitého připojení stahujeme data přímo.
-
-# Tvoje ID tabulky (získané z tvého odkazu)
+# --- 3. NAČTENÍ DAT Z GOOGLE SHEETS (Skrytě na pozadí) ---
 SHEET_ID = "1gAp2_XHEiNzQB7uODtcK2FmLrEXFm2yQ0wPNo6sJTds"
 
 def load_google_sheet(sheet_name):
@@ -43,31 +40,26 @@ def load_google_sheet(sheet_name):
 portfolio_context = "" 
 
 try:
-    # Stahujeme data přímo přes Pandas (tohle obejde chybu 400)
+    # Stahujeme data, ale už je NEVYPISUJEME na obrazovku
     df_portfolio = load_google_sheet("Portfolio")
     df_sledovane = load_google_sheet("Sledovane")
 
-    with st.expander("📂 Klikni zde pro zobrazení tvých tabulek"):
-        st.subheader("Aktuální Portfolio")
-        st.dataframe(df_portfolio)
-        st.subheader("Sledované Akcie")
-        st.dataframe(df_sledovane)
-
-    # Příprava dat pro bota
+    # Příprava dat pro bota (jen text do paměti)
     portfolio_txt = df_portfolio.to_string(index=False)
     sledovane_txt = df_sledovane.to_string(index=False)
     
     portfolio_context = f"""
-    DATA Z PORTFOLIA:
+    DATA Z PORTFOLIA UŽIVATELE:
     {portfolio_txt}
     
     DATA ZE SLEDOVANÝCH AKCIÍ:
     {sledovane_txt}
     """
-    st.success("✅ Tabulky načteny! (Použita metoda přímého exportu)")
+    # Pouze malá nenápadná hláška v rohu, že je vše OK (volitelné)
+    st.toast("✅ Data z trhů byla úspěšně načtena.", icon="📈")
 
 except Exception as e:
-    st.warning(f"⚠️ Nepodařilo se načíst tabulky. Zkontroluj, zda se listy jmenují přesně 'Portfolio' a 'Sledovane' a zda je tabulka veřejná. Chyba: {e}")
+    st.warning(f"⚠️ Nepodařilo se načíst data z tabulek. Zkontroluj Google Sheets. Chyba: {e}")
 
 
 # --- 4. FUNKCE PRO UČENÍ (PDF) ---
@@ -134,19 +126,25 @@ if prompt := st.chat_input("Zeptej se mě..."):
             if 'text' in res['metadata']:
                 context_books += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
+        # TADY JSME ZMĚNILI OSOBNOST BOTA
         system_prompt = f"""
-        Jsi MInBot, investiční rádce a následovník Benjamina Grahama.
+        Jsi MInBot, zkušený a nekompromisní investiční analytik.
         
-        ZNALOSTI Z KNIH:
+        Tvé myšlení je založeno na principech Benjamina Grahama (hledání vnitřní hodnoty, bezpečnostní marže, konzervativní přístup),
+        ALE tyto principy prezentuj jako SVÉ VLASTNÍ NÁZORY.
+        
+        ZNALOSTI (Knihy):
         {context_books}
         
-        TABULKY UŽIVATELE:
+        DATA (Tabulky):
         {portfolio_context}
         
-        INSTRUKCE:
-        - Analyzuj dotaz podle Grahama (Margin of Safety, P/E < 15, P/B < 1.5).
-        - Vycházej z dat v tabulkách, pokud jsou relevantní.
-        - Odpovídej česky a srozumitelně.
+        INSTRUKCE PRO TVÉ ODPOVĚDI:
+        1. NEPOUŽÍVEJ fráze jako "Podle Grahama", "Graham by řekl", "V knize se píše".
+        2. MLUV V PRVNÍ OSOBĚ: "Já to vidím takto...", "Nedoporučuji...", "Tato akcie je pro mě příliš drahá...".
+        3. Buď přímá. Pokud má akcie P/E nad 20 nebo 25, řekni rovnou, že je předražená a riskantní.
+        4. Vždy vycházej z čísel v tabulkách, pokud je máš k dispozici.
+        5. Odpovídej česky, stručně a expertně.
         """
 
         try:
