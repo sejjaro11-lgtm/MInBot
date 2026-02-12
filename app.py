@@ -173,4 +173,3 @@ if prompt := st.chat_input("Zeptej se Grahama na své portfolio..."):
 
 
 
-
