@@ -7,15 +7,14 @@ from sentence_transformers import SentenceTransformer
 import os
 from pypdf import PdfReader
 
-# --- 1. ZÁKLADNÍ NASTAVENÍ (Musí být vždy první) ---
+# --- 1. ZÁKLADNÍ NASTAVENÍ ---
 st.set_page_config(page_title="MInBot - Investiční Rádce", page_icon="📈", layout="wide")
-st.title("📈 MInBot - Investiční Architekt")
+st.title("📈 MInBot - Investiční Rádce")  # Opravený nadpis
 
 # --- 2. NAČTENÍ KLÍČŮ (SECRETS) ---
 try:
     PINECONE_KEY = st.secrets["PINECONE_API_KEY"]
     OPENAI_KEY = st.secrets["OPENAI_API_KEY"]
-    # Inicializace klientů
     pc = Pinecone(api_key=PINECONE_KEY)
     client = openai.OpenAI(api_key=OPENAI_KEY)
     index_name = "minbot-index"
@@ -24,7 +23,7 @@ except Exception as e:
     st.error(f"Chyba v klíčích nebo připojení k AI: {e}")
     st.stop()
 
-# Inicializace modelu pro embedování
+# Inicializace modelu
 @st.cache_resource
 def get_model():
     return SentenceTransformer('all-MiniLM-L6-v2')
@@ -32,38 +31,37 @@ def get_model():
 model = get_model()
 
 # --- 3. NAČTENÍ DAT Z GOOGLE SHEETS ---
-# Toto je ta nová část, která načte tvé portfolio a sledované akcie
 conn = st.connection("gsheets", type=GSheetsConnection)
-portfolio_context = "" # Proměnná pro textovou podobu tabulky
+portfolio_context = "" 
 
 try:
-    # Načtení obou listů
-    df_portfolio = conn.read(worksheet="Mé portfolium")
-    df_sledovane = conn.read(worksheet="Sledované akcie")
+    # Zde používáme nové názvy listů bez mezer!
+    # UJISTI SE, ŽE JSI PŘEJMENOVAL LISTY V GOOGLE SHEETS NA 'Portfolio' A 'Sledovane'
+    df_portfolio = conn.read(worksheet="Portfolio")
+    df_sledovane = conn.read(worksheet="Sledovane")
 
-    # Zobrazíme data v "balónku", aby nezabírala místo, ale šla zkontrolovat
-    with st.expander("📂 Klikni zde pro zobrazení tvých tabulek (Portfolio & Sledované)"):
+    with st.expander("📂 Klikni zde pro zobrazení tvých tabulek"):
         st.subheader("Aktuální Portfolio")
         st.dataframe(df_portfolio)
-        st.subheader("Sledované Akcie (Grahamův filtr)")
+        st.subheader("Sledované Akcie")
         st.dataframe(df_sledovane)
 
-    # Převedeme tabulky na text, aby si je AI mohla přečíst
+    # Příprava dat pro bota
     portfolio_txt = df_portfolio.to_string(index=False)
     sledovane_txt = df_sledovane.to_string(index=False)
     
-    # Vytvoříme kontext pro bota
     portfolio_context = f"""
-    DATA Z UŽIVATELOVA PORTFOLIA:
+    DATA Z PORTFOLIA:
     {portfolio_txt}
     
     DATA ZE SLEDOVANÝCH AKCIÍ:
     {sledovane_txt}
     """
-    st.success("✅ Tabulky úspěšně načteny a propojeny s mozkem bota.")
+    st.success("✅ Tabulky načteny.")
 
 except Exception as e:
-    st.warning(f"Nepodařilo se načíst Google Sheets (bot pojede bez nich). Chyba: {e}")
+    # Pokud se to nepovede, vypíšeme chybu, ale nespadneme
+    st.warning(f"⚠️ Nepodařilo se načíst tabulky. Zkontroluj, zda jsi přejmenoval listy na 'Portfolio' a 'Sledovane'. Chyba: {e}")
 
 
 # --- 4. FUNKCE PRO UČENÍ (PDF) ---
@@ -78,7 +76,7 @@ def index_documents():
         st.warning("Žádná PDF ve složce data.")
         return
 
-    status = st.status("MInBot se učí z nových dokumentů...")
+    status = st.status("MInBot se učí...")
     for filename in files:
         try:
             path = os.path.join(data_dir, filename)
@@ -88,7 +86,6 @@ def index_documents():
                 extract = page.extract_text()
                 if extract: text += extract + " "
             
-            # Rozsekání a uložení
             chunk_size = 1000
             chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size - 100)]
             
@@ -102,32 +99,28 @@ def index_documents():
         except Exception as e:
             st.error(f"Chyba u souboru {filename}: {e}")
             
-    status.update(label="✅ Učení dokončeno! Data jsou uložena v 'mozku'.", state="complete")
+    status.update(label="✅ Učení dokončeno!", state="complete")
 
-# Tlačítko v bočním panelu
 with st.sidebar:
     st.header("🧠 Správa znalostí")
-    if st.button("Naučit se nové dokumenty z GitHubu"):
+    if st.button("Naučit se nové dokumenty"):
         index_documents()
 
-# --- 5. CHAT S GRAHAMEM ---
+# --- 5. CHAT ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Vypisování historie chatu
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Hlavní logika odpovědi
-if prompt := st.chat_input("Zeptej se Grahama na své portfolio..."):
-    # 1. Uložení dotazu
+# Opravený placeholder v poli pro otázku
+if prompt := st.chat_input("Zeptej se mě..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        # 2. Hledání v Pinecone (Knihy/PDF)
         query_vector = model.encode(prompt).tolist()
         results = index.query(vector=query_vector, top_k=3, include_metadata=True)
         
@@ -136,25 +129,21 @@ if prompt := st.chat_input("Zeptej se Grahama na své portfolio..."):
             if 'text' in res['metadata']:
                 context_books += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
-        # 3. Sestavení instrukce pro GPT-4o (Knihy + Tabulky + Persona)
         system_prompt = f"""
-        Jsi MInBot, investiční architekt a přísný následovník Benjamina Grahama.
+        Jsi MInBot, investiční rádce a následovník Benjamina Grahama.
         
-        Máš k dispozici dva zdroje informací:
-        1. ZNALOSTI Z KNIH (Pinecone):
+        ZNALOSTI Z KNIH:
         {context_books}
         
-        2. UŽIVATELOVY TABULKY (Google Sheets):
+        TABULKY UŽIVATELE:
         {portfolio_context}
         
         INSTRUKCE:
-        - Analyzuj uživatelův dotaz na základě Grahamových principů (Margin of Safety, P/E < 15, P/B < 1.5).
-        - Pokud se uživatel ptá na akcii ze svého portfolia, najdi ji v datech tabulky a komentuj její aktuální stav.
-        - Pokud data v tabulce chybí (např. P/E je 0 nebo NaN), upozorni na to, ale zkus odhadnout situaci podle obecných znalostí.
-        - Odpovídej česky, stručně a expertně.
+        - Analyzuj dotaz podle Grahama (Margin of Safety, P/E < 15, P/B < 1.5).
+        - Vycházej z dat v tabulkách, pokud jsou relevantní.
+        - Odpovídej česky a srozumitelně.
         """
 
-        # 4. Volání AI
         try:
             response = client.chat.completions.create(
                 model="gpt-4o",
@@ -167,7 +156,8 @@ if prompt := st.chat_input("Zeptej se Grahama na své portfolio..."):
             st.markdown(answer)
             st.session_state.messages.append({"role": "assistant", "content": answer})
         except Exception as e:
-            st.error(f"Chyba při komunikaci s OpenAI: {e}")
+            st.error(f"Chyba OpenAI: {e}")
+
 
 
 
