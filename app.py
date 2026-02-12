@@ -55,51 +55,68 @@ try:
     {sledovane_txt}
     """
     
-    # Zde je opravená hláška, která ti potvrdí načtení dat
     st.toast("✅ Data z trhů byla úspěšně načtena.", icon="📈")
 
 except Exception as e:
     st.toast(f"⚠️ Nepodařilo se načíst tabulky: {e}", icon="⚠️")
 
 
-# --- 4. FUNKCE PRO VYKRESLENÍ GRAFU ---
-def plot_financial_data(ticker_symbol):
-    """Stáhne data z Yahoo Finance a vykreslí graf"""
+# --- 4. VYLEPŠENÁ FUNKCE PRO VYKRESLENÍ GRAFU ---
+def plot_financial_data(ticker_symbol, start_year=None, end_year=None):
+    """
+    Stáhne MAXIMÁLNÍ historii a ořízne ji podle přání uživatele.
+    """
     try:
-        with st.spinner(f"Stahuji graf pro {ticker_symbol}..."):
-            # Stáhneme data
-            data = yf.download(ticker_symbol, period="20y", progress=False)
+        with st.spinner(f"Stahuji a filtruji data pro {ticker_symbol}..."):
+            # VŽDY stahujeme 'max' historii, abychom měli data od IPO (např. 1980)
+            data = yf.download(ticker_symbol, period="max", progress=False)
             
             if data.empty:
-                st.error(f"Pro symbol {ticker_symbol} se nepodařilo stáhnout data. Zkuste jiný ticker.")
+                st.error(f"Pro symbol {ticker_symbol} se nepodařilo stáhnout data.")
                 return
 
-            # Ošetření formátu dat
+            # Ošetření formátu dat (MultiIndex vs Single Index)
             if isinstance(data.columns, pd.MultiIndex):
                 y_data = data['Close']
             else:
                 y_data = data['Close']
             
+            # Ošetření Series vs DataFrame
+            if isinstance(y_data, pd.DataFrame):
+                # Pokud yfinance vrátí DataFrame i pro jeden sloupec, převedeme na Series
+                y_data = y_data.iloc[:, 0]
+
+            # --- FILTROVÁNÍ PODLE ROKŮ ---
+            # Pokud uživatel zadal roky, ořízneme data
+            if start_year and start_year.isdigit():
+                y_data = y_data[y_data.index.year >= int(start_year)]
+            
+            if end_year and end_year.isdigit():
+                y_data = y_data[y_data.index.year <= int(end_year)]
+
+            if y_data.empty:
+                st.warning(f"Pro zadané období {start_year}-{end_year} nejsou data dostupná.")
+                return
+
             # Vykreslení
-            st.subheader(f"📈 Vývoj ceny: {ticker_symbol}")
+            title_text = f"📈 Vývoj ceny: {ticker_symbol}"
+            if start_year:
+                title_text += f" (od roku {start_year})"
+            if end_year:
+                title_text += f" (do roku {end_year})"
+                
+            st.subheader(title_text)
             st.line_chart(y_data)
             
-            # Výpočet změny (ošetření pro různé formáty vrácené yfinance)
+            # Výpočet změny za ZOBRAZENÉ období
             try:
-                last_val = y_data.iloc[-1]
-                first_val = y_data.iloc[0]
-                
-                if isinstance(last_val, pd.Series): last_val = last_val.iloc[0]
-                if isinstance(first_val, pd.Series): first_val = first_val.iloc[0]
-
-                last_price = float(last_val)
-                first_price = float(first_val)
-                
+                last_price = float(y_data.iloc[-1])
+                first_price = float(y_data.iloc[0])
                 change = ((last_price - first_price) / first_price) * 100
                 
                 col1, col2 = st.columns(2)
-                col1.metric("Aktuální cena", f"{last_price:,.2f}")
-                col2.metric("Změna za zobrazené období", f"{change:+.2f} %")
+                col1.metric("Cena na konci období", f"{last_price:,.2f}")
+                col2.metric("Změna za vybrané období", f"{change:+.2f} %")
             except Exception as e:
                 print(f"Chyba metriky: {e}")
 
@@ -145,16 +162,18 @@ with st.sidebar:
     if st.button("Naučit se nové dokumenty"):
         index_documents()
 
-# --- 6. CHAT ---
+# --- 6. CHAT A LOGIKA ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # Vykreslení historie
 for msg in st.session_state.messages:
-    if msg["role"] == "assistant" and "chart_ticker" in msg:
+    if msg["role"] == "assistant" and "chart_data" in msg:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-            plot_financial_data(msg["chart_ticker"])
+            # Rozbalení uložených dat pro graf
+            c_ticker, c_start, c_end = msg["chart_data"]
+            plot_financial_data(c_ticker, c_start, c_end)
     else:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
@@ -173,9 +192,9 @@ if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
             if 'text' in res['metadata']:
                 context_books += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
-        # --- UPDATE INSTRUKCÍ: STRIKTNÍ PRAVIDLA PRO GRAFY ---
+        # --- NOVÉ CHYTŘEJŠÍ INSTRUKCE PRO DATA ---
         system_prompt = f"""
-        Jsi MInBot, nekompromisní investiční analytik.
+        Jsi MInBot, investiční analytik s myšlením Benjamina Grahama.
         
         ZNALOSTI Z KNIH:
         {context_books}
@@ -184,23 +203,20 @@ if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
         {portfolio_context}
         
         INSTRUKCE:
-        1. MLUV VŽDY V PRVNÍ OSOBĚ ("Já si myslím", "Nedoporučuji"). Nikdy necituj "Podle Grahama".
+        1. MLUV VŽDY V PRVNÍ OSOBĚ. Necituj "Podle Grahama".
         
-        2. PRAVIDLA PRO VYKRESLOVÁNÍ GRAFŮ (STRIKTNÍ!):
-           - Značku [[GRAF: TICKER]] vlož na konec POUZE tehdy, pokud uživatel EXPLICITNĚ požádá o: "graf", "vývoj", "historii", "trend" nebo "ukázat v čase".
-           - Pokud se uživatel ptá JEN na "aktuální cenu", "hodnotu", "kolik stojí" nebo "info o akcii":
-             -> NAPIŠ JEN ODPOVĚĎ. NEVKLÁDEJ ŽÁDNOU ZNAČKU PRO GRAF.
+        2. PRAVIDLA PRO GRAFY (DŮLEŽITÉ):
+           - Pokud uživatel chce graf, MUSÍŠ zjistit, jestli zmínil konkrétní roky (např. "od 1996 do 2023").
+           - Na konec odpovědi vlož značku v tomto formátu: [[GRAF: TICKER | START_ROK | KONEC_ROK]]
+           
+           PŘÍKLADY ZNAČEK:
+           - "Ukaž graf Apple": [[GRAF: AAPL | | ]]  (žádné roky = celá historie)
+           - "Graf Apple od 1996 do 2023": [[GRAF: AAPL | 1996 | 2023]]
+           - "Graf Apple od roku 2010": [[GRAF: AAPL | 2010 | ]]
+           
+           TICKERY: S&P 500 -> SPY, Nasdaq -> QQQ, Dow -> DIA, Bitcoin -> BTC-USD.
         
-        3. Pokud uživatel chce graf, použij správný ETF ticker:
-           - S&P 500 -> SPY
-           - NASDAQ -> QQQ
-           - DOW JONES -> DIA
-           - Bitcoin -> BTC-USD
-           - Zlato -> GLD
-        
-        4. Příklad správného chování:
-           - Uživatel: "Kolik stojí Apple?" -> Ty: "Aktuální cena Apple je 180 USD." (BEZ GRAFU)
-           - Uživatel: "Ukaž mi vývoj Apple." -> Ty: "Zde je historie vývoje ceny. [[GRAF: AAPL]]"
+        3. Pokud uživatel chce jen cenu ("kolik stojí"), graf nevkládej.
         """
 
         try:
@@ -213,26 +229,40 @@ if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
             )
             raw_answer = response.choices[0].message.content
             
-            # Hledání značky pro graf
+            # --- ZPRACOVÁNÍ ODPOVĚDI A PARSOVÁNÍ ROKŮ ---
+            # Hledáme formát [[GRAF: TICKER | START | END]]
             chart_match = re.search(r"\[\[GRAF: (.*?)\]\]", raw_answer)
+            
             chart_ticker = None
+            start_year = None
+            end_year = None
             clean_answer = raw_answer
             
             if chart_match:
-                chart_ticker = chart_match.group(1)
-                clean_answer = raw_answer.replace(chart_match.group(0), "")
+                content = chart_match.group(1) # Získáme vnitřek: "AAPL | 1996 | 2023"
+                clean_answer = raw_answer.replace(chart_match.group(0), "") # Smažeme značku z textu
+                
+                # Rozdělíme podle svislítka
+                parts = [p.strip() for p in content.split('|')]
+                
+                if len(parts) >= 1:
+                    chart_ticker = parts[0]
+                if len(parts) >= 2:
+                    start_year = parts[1] if parts[1] else None
+                if len(parts) >= 3:
+                    end_year = parts[2] if parts[2] else None
             
             # Zobrazení odpovědi
             st.markdown(clean_answer)
             
-            # Vykreslení grafu (pouze pokud ho AI schválila)
+            # Vykreslení grafu s parametry
             if chart_ticker:
-                plot_financial_data(chart_ticker)
+                plot_financial_data(chart_ticker, start_year, end_year)
                 
-            # Uložení
+            # Uložení do historie (ukládáme si i ty roky, aby graf zůstal stejný i po obnovení)
             msg_data = {"role": "assistant", "content": clean_answer}
             if chart_ticker:
-                msg_data["chart_ticker"] = chart_ticker
+                msg_data["chart_data"] = (chart_ticker, start_year, end_year)
             
             st.session_state.messages.append(msg_data)
 
