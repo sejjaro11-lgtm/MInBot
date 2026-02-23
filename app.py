@@ -222,73 +222,90 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
         INSTRUKCE:
         1. MLUV V PRVNÍ OSOBĚ A ZA SEBE. NEPOUŽÍVEJ JMÉNO "GRAHAM".
         2. Pokud chce uživatel graf, vlož na konec značku: [[GRAF: TICKER | START | END]]
-        3. Pokud ti chybí data k akcii (P/E, dluh), vlož POUZE značku: [[FUNDAMENTY: TICKER]]. Neomlouvej se!
-        4. TVRDÁ PRAVIDLA PRO ANALÝZU (Když dostaneš DATA Z BURZY):
+        3. POKUD NEMÁŠ DATA K AKCII (P/E, dluh), NESMÍŠ PSÁT ŽÁDNÝ TEXT ANI ANALÝZU! Vypiš pouze a jenom značku: [[FUNDAMENTY: TICKER]].
+        4. TVRDÁ PRAVIDLA PRO ANALÝZU (Když dostaneš DATA PŘÍMO Z BURZY):
            - ROZSAH: Tvá analýza musí být velmi podrobná a vysvětlovat souvislosti.
            - MATEMATIKA: Vezmi Celkový dluh a odečti od něj Celkovou hotovost. Napiš výsledek a zhodnoť zadlužení.
            - ZTRÁTA: Pokud P/E chybí, jasně napiš, že firma negeneruje zisk a představuje riziko.
-           - HISTORICKÁ SÍLA VS. SOUČASNOST: Pokud je firma historicky slavná (např. Intel), upozorni, že minulá sláva neomlouvá současná špatná čísla (tzv. "Hodnotová past").
+           - HISTORICKÁ SÍLA VS. SOUČASNOST: Pokud je firma historicky slavná, upozorni, že minulá sláva neomlouvá současná špatná čísla ("Hodnotová past").
         5. JAZYK A FORMÁT: Čistá čeština. ZÁKAZ používat asijské znaky. Nepoužívej znak dolaru pro měnu, vždy piš "USD".
-        6. ZÁKAZ OPAKOVÁNÍ ZNAČKY: Pokud v chatu vidíš "DATA PŘÍMO Z BURZY", nesmíš už nikdy vypsat značku FUNDAMENTY. Rovnou udělej analýzu.
+        6. Pokud máš v historii zpráv "DATA PŘÍMO Z BURZY", už NESMÍŠ vypsat značku FUNDAMENTY. Rovnou napiš finální odpověď.
         """
 
         try:
+            # První volání AI
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[{"role": "system", "content": system_prompt}] + st.session_state.messages
             )
             raw_answer = response.choices[0].message.content
             
-            chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", raw_answer, re.IGNORECASE)
             fund_match = re.search(r"\[\[FUNDAMENTY:\s*(.*?)\]\]", raw_answer, re.IGNORECASE)
             
-            chart_ticker = None; start_year = None; end_year = None
-            fund_ticker = None
-            
-            # Bezpečné odstranění značek z textu
-            clean_answer = re.sub(r"\[\[\s*FUNDAMENTY:\s*.*?\s*\]\]", "", raw_answer, flags=re.IGNORECASE).strip()
-            if chart_match:
-                content = chart_match.group(1)
-                clean_answer = re.sub(r"\[\[\s*GRAF:\s*.*?\s*\]\]", "", clean_answer, flags=re.IGNORECASE).strip()
-                parts = [p.strip() for p in content.split('|')]
-                if len(parts) >= 1: chart_ticker = parts[0]
-                if len(parts) >= 2: start_year = parts[1] if parts[1] else None
-                if len(parts) >= 3: end_year = parts[2] if parts[2] else None
-
             if fund_match:
+                # --- AI SI VYŽÁDALA DATA ---
                 fund_ticker = fund_match.group(1).strip()
-            
-            if clean_answer:
-                st.markdown(clean_answer)
-                st.session_state.messages.append({"role": "assistant", "content": clean_answer, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
-            
-            if chart_ticker:
-                stats_context = analyze_and_plot(chart_ticker, start_year, end_year)
-                if stats_context:
-                    st.session_state.messages.append({"role": "system", "content": stats_context})
-                    if not clean_answer: 
-                        st.session_state.messages.append({"role": "assistant", "content": "", "chart_data": (chart_ticker, start_year, end_year)})
-            
-            if fund_ticker:
+                
                 with st.spinner(f"Stahuji data přímo z burzy pro {fund_ticker}..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
-                    # DŮLEŽITÉ: Nyní dáváme botovi data jako zprávu "od tebe" (user), aby musel odpovědět.
-                    st.session_state.messages.append({"role": "user", "content": fund_context})
+                    # Přidáme stažená data boti do paměti jako "systémové info"
+                    st.session_state.messages.append({"role": "system", "content": fund_context})
                     
+                    # ZAVOLÁME AI ZNOVU S NOVÝMI DATY (A PŘEDCHOZÍ ZMATENÝ POKUS UPLNĚ VYHODÍME)
                     response_2 = client.chat.completions.create(
                         model="gpt-4o",
                         messages=[{"role": "system", "content": system_prompt}] + st.session_state.messages
                     )
                     final_answer = response_2.choices[0].message.content
                     
-                    # Absolutní pojistka proti opakování značky
+                    # Kontrola, jestli náhodou nechtěl ještě graf
+                    chart_ticker = None; start_year = None; end_year = None
+                    chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", final_answer, re.IGNORECASE)
+                    if chart_match:
+                        content = chart_match.group(1)
+                        final_answer = final_answer.replace(chart_match.group(0), "").strip()
+                        parts = [p.strip() for p in content.split('|')]
+                        if len(parts) >= 1: chart_ticker = parts[0]
+                        if len(parts) >= 2: start_year = parts[1] if parts[1] else None
+                        if len(parts) >= 3: end_year = parts[2] if parts[2] else None
+                    
+                    # Smazání případných zbytkových značek pro jistotu
                     final_answer = re.sub(r"\[\[\s*FUNDAMENTY:\s*.*?\s*\]\]", "", final_answer, flags=re.IGNORECASE).strip()
-                    if not final_answer:
-                        final_answer = "Omlouvám se, data se podařilo stáhnout, ale nastala chyba při generování textu."
-
+                    
                     st.markdown(final_answer)
-                    st.session_state.messages.append({"role": "assistant", "content": final_answer})
+                    st.session_state.messages.append({"role": "assistant", "content": final_answer, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
+                    
+                    # Graf
+                    if chart_ticker:
+                        stats_context = analyze_and_plot(chart_ticker, start_year, end_year)
+                        if stats_context:
+                            st.session_state.messages.append({"role": "system", "content": stats_context})
+                            
+            else:
+                # --- AI MÁ VŠECHNO A JEN ODPOVÍDÁ (BEZ DAT Z BURZY) ---
+                clean_answer = raw_answer
+                chart_ticker = None; start_year = None; end_year = None
+                
+                chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", clean_answer, re.IGNORECASE)
+                if chart_match:
+                    content = chart_match.group(1)
+                    clean_answer = clean_answer.replace(chart_match.group(0), "").strip()
+                    parts = [p.strip() for p in content.split('|')]
+                    if len(parts) >= 1: chart_ticker = parts[0]
+                    if len(parts) >= 2: start_year = parts[1] if parts[1] else None
+                    if len(parts) >= 3: end_year = parts[2] if parts[2] else None
+
+                if clean_answer:
+                    st.markdown(clean_answer)
+                    st.session_state.messages.append({"role": "assistant", "content": clean_answer, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
+                
+                if chart_ticker:
+                    stats_context = analyze_and_plot(chart_ticker, start_year, end_year)
+                    if stats_context:
+                        st.session_state.messages.append({"role": "system", "content": stats_context})
+                        if not clean_answer: 
+                            st.session_state.messages.append({"role": "assistant", "content": "", "chart_data": (chart_ticker, start_year, end_year)})
 
         except Exception as e:
             st.error(f"Chyba při komunikaci s AI: {e}")
