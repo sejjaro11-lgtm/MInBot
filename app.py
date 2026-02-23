@@ -59,7 +59,6 @@ try:
 except Exception as e:
     st.toast(f"⚠️ Nepodařilo se načíst tabulky: {e}", icon="⚠️")
 
-
 # --- 4. FUNKCE PRO VYKRESLENÍ A ANALÝZU GRAFU ---
 def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
     stats_summary = None 
@@ -122,7 +121,7 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
         
     return stats_summary
 
-# --- 4.5 NOVÁ FUNKCE PRO FUNDAMENTÁLNÍ DATA (GRAHAM) ---
+# --- 4.5 FUNKCE PRO FUNDAMENTÁLNÍ DATA (GRAHAM) ---
 def get_graham_fundamentals(ticker_symbol):
     try:
         stock = yf.Ticker(ticker_symbol)
@@ -185,12 +184,13 @@ if "messages" not in st.session_state:
 # Vykreslení historie
 for msg in st.session_state.messages:
     if msg["role"] == "assistant" and "chart_data" in msg:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-            c_ticker, c_start, c_end = msg["chart_data"]
-            if c_ticker:
-                analyze_and_plot(c_ticker, c_start, c_end)
-    elif msg["role"] != "system": 
+        if msg["content"]:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+        c_ticker, c_start, c_end = msg["chart_data"]
+        if c_ticker:
+            analyze_and_plot(c_ticker, c_start, c_end)
+    elif msg["role"] != "system" and msg["content"]: 
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
@@ -220,21 +220,21 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
         INSTRUKCE:
         1. MLUV V PRVNÍ OSOBĚ.
         2. Pokud chce uživatel graf, vlož na konec značku: [[GRAF: TICKER | START | END]]
-        3. PŘÍSNÉ PRAVIDLO PRO FUNDAMENTY: Pokud se tě uživatel ptá na akcii a ty v tabulkách nevidíš její aktuální P/E, dluh nebo hotovost, NESMÍŠ se omlouvat, NESMÍŠ psát, že data nemáš, a NESMÍŠ žádat uživatele, aby je hledal! Tvá JEDINÁ reakce v takovém případě musí být vložení této značky: [[FUNDAMENTY: TICKER]] (např. [[FUNDAMENTY: INTC]]). Náš systém tuto značku zachytí a data ti okamžitě dodá.
-        4. Pokud jsi v předchozím kroku viděla "SYSTÉMOVÁ POZNÁMKA", znamená to, že data už máš. Použij je k vypracování finální expertní odpovědi a žádnou další značku už nevkládej.
+        3. PŘÍSNÉ PRAVIDLO PRO FUNDAMENTY: Pokud se tě uživatel ptá na akcii a ty v tabulkách nevidíš její aktuální P/E, dluh nebo hotovost, NESMÍŠ se omlouvat a NESMÍŠ psát, že data nemáš! Tvá JEDINÁ reakce musí být vložení této značky: [[FUNDAMENTY: TICKER]] (např. [[FUNDAMENTY: INTC]]).
+        4. Pokud jsi v předchozím kroku viděla "SYSTÉMOVÁ POZNÁMKA - FUNDAMENTY", znamená to, že data z burzy už máš. Použij je k vypracování finální expertní odpovědi a žádnou další značku už nevkládej.
         """
 
         try:
-            # První volání AI (zjistí, jestli potřebuje stáhnout data)
+            # 1. Volání AI
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[{"role": "system", "content": system_prompt}] + st.session_state.messages
             )
             raw_answer = response.choices[0].message.content
             
-            # Zpracování speciálních značek
-            chart_match = re.search(r"\[\[GRAF: (.*?)\]\]", raw_answer)
-            fund_match = re.search(r"\[\[FUNDAMENTY: (.*?)\]\]", raw_answer)
+            # Hledání značek (odolnější Regex ignorující mezery navíc a velikost písmen)
+            chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", raw_answer, re.IGNORECASE)
+            fund_match = re.search(r"\[\[FUNDAMENTY:\s*(.*?)\]\]", raw_answer, re.IGNORECASE)
             
             chart_ticker = None; start_year = None; end_year = None
             fund_ticker = None
@@ -242,7 +242,7 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
             
             if chart_match:
                 content = chart_match.group(1)
-                clean_answer = clean_answer.replace(chart_match.group(0), "")
+                clean_answer = clean_answer.replace(chart_match.group(0), "").strip()
                 parts = [p.strip() for p in content.split('|')]
                 if len(parts) >= 1: chart_ticker = parts[0]
                 if len(parts) >= 2: start_year = parts[1] if parts[1] else None
@@ -250,24 +250,28 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
 
             if fund_match:
                 fund_ticker = fund_match.group(1).strip()
-                clean_answer = clean_answer.replace(fund_match.group(0), "")
+                clean_answer = clean_answer.replace(fund_match.group(0), "").strip()
             
-            st.markdown(clean_answer)
-            st.session_state.messages.append({"role": "assistant", "content": clean_answer, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
+            # Pokud zbyde nějaký text, vypíšeme ho
+            if clean_answer:
+                st.markdown(clean_answer)
+                st.session_state.messages.append({"role": "assistant", "content": clean_answer, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
             
             # Vykreslení grafu a uložení poznámky
             if chart_ticker:
                 stats_context = analyze_and_plot(chart_ticker, start_year, end_year)
                 if stats_context:
                     st.session_state.messages.append({"role": "system", "content": stats_context})
+                    if not clean_answer: # Aby nezmizela bublina, pokud byl výstupem jen graf
+                        st.session_state.messages.append({"role": "assistant", "content": "", "chart_data": (chart_ticker, start_year, end_year)})
             
-            # Stahování fundamentů a druhé volání AI (pokud si bot vyžádal data)
+            # Stahování fundamentů a DRUHÉ volání AI (Tohle vyřeší tu prázdnou značku)
             if fund_ticker:
-                with st.spinner(f"Stahuji finanční výkazy pro {fund_ticker}..."):
+                with st.spinner(f"Stahuji data přímo z burzy pro {fund_ticker}..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     st.session_state.messages.append({"role": "system", "content": fund_context})
                     
-                    # AI rovnou odpoví na základě nově stažených dat
+                    # AI hned nato sama odpoví na základě nově stažených dat
                     response_2 = client.chat.completions.create(
                         model="gpt-4o",
                         messages=[{"role": "system", "content": system_prompt}] + st.session_state.messages
@@ -278,15 +282,3 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
 
         except Exception as e:
             st.error(f"Chyba: {e}")
-
-
-
-
-
-
-
-
-
-
-
-
