@@ -220,8 +220,8 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
         INSTRUKCE:
         1. MLUV V PRVNÍ OSOBĚ.
         2. Pokud chce uživatel graf, vlož na konec značku: [[GRAF: TICKER | START | END]]
-        3. Pokud potřebuješ znát aktuální finanční zdraví firmy (P/E, dluhy, účetní hodnotu), vlož do odpovědi značku: [[FUNDAMENTY: TICKER]]
-        4. Pokud jsi v předchozím kroku viděla "SYSTÉMOVÁ POZNÁMKA", používej tato data k definitivním odpovědím a analytice.
+        3. PŘÍSNÉ PRAVIDLO PRO FUNDAMENTY: Pokud se tě uživatel ptá na akcii a ty v tabulkách nevidíš její aktuální P/E, dluh nebo hotovost, NESMÍŠ se omlouvat, NESMÍŠ psát, že data nemáš, a NESMÍŠ žádat uživatele, aby je hledal! Tvá JEDINÁ reakce v takovém případě musí být vložení této značky: [[FUNDAMENTY: TICKER]] (např. [[FUNDAMENTY: INTC]]). Náš systém tuto značku zachytí a data ti okamžitě dodá.
+        4. Pokud jsi v předchozím kroku viděla "SYSTÉMOVÁ POZNÁMKA", znamená to, že data už máš. Použij je k vypracování finální expertní odpovědi a žádnou další značku už nevkládej.
         """
 
         try:
@@ -278,6 +278,7 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
 
         except Exception as e:
             st.error(f"Chyba: {e}")
+
 
 
 
