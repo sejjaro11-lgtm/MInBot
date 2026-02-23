@@ -54,7 +54,6 @@ try:
     DATA ZE SLEDOVANÝCH AKCIÍ A INDEXŮ:
     {sledovane_txt}
     """
-    
     st.toast("✅ Data z trhů byla úspěšně načtena.", icon="📈")
 
 except Exception as e:
@@ -63,21 +62,14 @@ except Exception as e:
 
 # --- 4. FUNKCE PRO VYKRESLENÍ A ANALÝZU GRAFU ---
 def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
-    """
-    Stáhne data, vykreslí graf a vrátí statistický souhrn pro AI.
-    """
-    stats_summary = None # Textová analýza pro mozek bota
-    
+    stats_summary = None 
     try:
         with st.spinner(f"Analyzuji data pro {ticker_symbol}..."):
-            # Stahujeme 'max' historii
             data = yf.download(ticker_symbol, period="max", progress=False)
-            
             if data.empty:
                 st.error(f"Pro symbol {ticker_symbol} nejsou data.")
                 return None
 
-            # Ošetření formátů
             if isinstance(data.columns, pd.MultiIndex):
                 y_data = data['Close']
             else:
@@ -86,7 +78,6 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
             if isinstance(y_data, pd.DataFrame):
                 y_data = y_data.iloc[:, 0]
 
-            # --- FILTROVÁNÍ ---
             if start_year and start_year.isdigit():
                 y_data = y_data[y_data.index.year >= int(start_year)]
             if end_year and end_year.isdigit():
@@ -96,7 +87,6 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
                 st.warning(f"Žádná data pro období {start_year}-{end_year}.")
                 return None
 
-            # --- VYKRESLENÍ GRAFU ---
             title_text = f"📈 Vývoj ceny: {ticker_symbol}"
             if start_year: title_text += f" (od {start_year})"
             if end_year: title_text += f" (do {end_year})"
@@ -104,7 +94,6 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
             st.subheader(title_text)
             st.line_chart(y_data)
             
-            # --- VÝPOČET STATISTIK PRO UŽIVATELE ---
             try:
                 last_price = float(y_data.iloc[-1])
                 first_price = float(y_data.iloc[0])
@@ -117,8 +106,6 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
             except Exception:
                 pass
 
-            # --- GENERUJEME "PAMĚŤ" PRO BOTA ---
-            # Toto je to kouzlo: převedeme graf na text, který si AI přečte
             stats_summary = f"""
             [SYSTÉMOVÁ POZNÁMKA - VÝSLEDEK ANALÝZY GRAFU PRO {ticker_symbol}]
             Zobrazené období: {start_year if start_year else 'Začátek'} - {end_year if end_year else 'Dnes'}
@@ -135,6 +122,34 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
         
     return stats_summary
 
+# --- 4.5 NOVÁ FUNKCE PRO FUNDAMENTÁLNÍ DATA (GRAHAM) ---
+def get_graham_fundamentals(ticker_symbol):
+    try:
+        stock = yf.Ticker(ticker_symbol)
+        info = stock.info
+        
+        pe = info.get('trailingPE', 'Chybí')
+        pb = info.get('priceToBook', 'Chybí')
+        debt = info.get('totalDebt', 0)
+        cash = info.get('totalCash', 0)
+        
+        def format_money(val):
+            if val == 'Chybí' or val is None: return 'Chybí'
+            if val >= 1e9: return f"${val/1e9:.2f} mld."
+            if val >= 1e6: return f"${val/1e6:.2f} mil."
+            return f"${val:,.2f}"
+
+        summary = f"""
+        [SYSTÉMOVÁ POZNÁMKA - FUNDAMENTY PRO {ticker_symbol}]
+        P/E: {pe} (Graham by sledoval, zda je < 15)
+        P/B: {pb} (Graham by sledoval, zda je < 1.5)
+        Celková hotovost na účtech: {format_money(cash)}
+        Celkový dluh: {format_money(debt)}
+        """
+        return summary
+    except Exception as e:
+        return f"[SYSTÉMOVÁ POZNÁMKA] Nepodařilo se stáhnout fundamenty pro {ticker_symbol} přes yfinance."
+
 # --- 5. FUNKCE PRO UČENÍ (PDF) ---
 def index_documents():
     data_dir = "data"
@@ -143,7 +158,6 @@ def index_documents():
     if not files: return
     status = st.status("MInBot se učí...")
     for filename in files:
-        # ... (zde zůstává stejný kód pro PDF) ...
         try:
             path = os.path.join(data_dir, filename)
             reader = PdfReader(path)
@@ -174,13 +188,13 @@ for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             c_ticker, c_start, c_end = msg["chart_data"]
-            # Znovu vykreslíme graf, ale statistiky už neukládáme (jsou v historii)
-            analyze_and_plot(c_ticker, c_start, c_end)
-    elif msg["role"] != "system": # Systémové zprávy uživateli neukazujeme
+            if c_ticker:
+                analyze_and_plot(c_ticker, c_start, c_end)
+    elif msg["role"] != "system": 
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
+if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -206,49 +220,65 @@ if prompt := st.chat_input("Zeptej se mě na graf nebo analýzu..."):
         INSTRUKCE:
         1. MLUV V PRVNÍ OSOBĚ.
         2. Pokud chce uživatel graf, vlož na konec značku: [[GRAF: TICKER | START | END]]
-           - S&P 500 -> SPY, Nasdaq -> QQQ, Dow -> DIA, Bitcoin -> BTC-USD
-        3. Pokud jsi v předchozím kroku viděla "SYSTÉMOVÁ POZNÁMKA", používej tato data k odpovědím na otázky o grafu.
+        3. Pokud potřebuješ znát aktuální finanční zdraví firmy (P/E, dluhy, účetní hodnotu), vlož do odpovědi značku: [[FUNDAMENTY: TICKER]]
+        4. Pokud jsi v předchozím kroku viděla "SYSTÉMOVÁ POZNÁMKA", používej tato data k definitivním odpovědím a analytice.
         """
 
         try:
+            # První volání AI (zjistí, jestli potřebuje stáhnout data)
             response = client.chat.completions.create(
                 model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": system_prompt}
-                ] + st.session_state.messages # Posíláme celou historii vč. skrytých dat
+                messages=[{"role": "system", "content": system_prompt}] + st.session_state.messages
             )
             raw_answer = response.choices[0].message.content
             
-            # Zpracování odpovědi a grafu
+            # Zpracování speciálních značek
             chart_match = re.search(r"\[\[GRAF: (.*?)\]\]", raw_answer)
+            fund_match = re.search(r"\[\[FUNDAMENTY: (.*?)\]\]", raw_answer)
+            
             chart_ticker = None; start_year = None; end_year = None
+            fund_ticker = None
             clean_answer = raw_answer
             
-            stats_context = None # Zde uložíme "paměť" grafu
-
             if chart_match:
                 content = chart_match.group(1)
-                clean_answer = raw_answer.replace(chart_match.group(0), "")
+                clean_answer = clean_answer.replace(chart_match.group(0), "")
                 parts = [p.strip() for p in content.split('|')]
                 if len(parts) >= 1: chart_ticker = parts[0]
                 if len(parts) >= 2: start_year = parts[1] if parts[1] else None
                 if len(parts) >= 3: end_year = parts[2] if parts[2] else None
+
+            if fund_match:
+                fund_ticker = fund_match.group(1).strip()
+                clean_answer = clean_answer.replace(fund_match.group(0), "")
             
             st.markdown(clean_answer)
-            
-            # Vykreslení + Získání "paměti"
-            if chart_ticker:
-                stats_context = analyze_and_plot(chart_ticker, start_year, end_year)
-                
-            # Uložení zpráv
             st.session_state.messages.append({"role": "assistant", "content": clean_answer, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
             
-            # POKUD MÁME DATA Z GRAFU, ULOŽÍME JE JAKO SKRYTOU ZPRÁVU PRO BOTA
-            if stats_context:
-                st.session_state.messages.append({"role": "system", "content": stats_context})
+            # Vykreslení grafu a uložení poznámky
+            if chart_ticker:
+                stats_context = analyze_and_plot(chart_ticker, start_year, end_year)
+                if stats_context:
+                    st.session_state.messages.append({"role": "system", "content": stats_context})
+            
+            # Stahování fundamentů a druhé volání AI (pokud si bot vyžádal data)
+            if fund_ticker:
+                with st.spinner(f"Stahuji finanční výkazy pro {fund_ticker}..."):
+                    fund_context = get_graham_fundamentals(fund_ticker)
+                    st.session_state.messages.append({"role": "system", "content": fund_context})
+                    
+                    # AI rovnou odpoví na základě nově stažených dat
+                    response_2 = client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[{"role": "system", "content": system_prompt}] + st.session_state.messages
+                    )
+                    final_answer = response_2.choices[0].message.content
+                    st.markdown(final_answer)
+                    st.session_state.messages.append({"role": "assistant", "content": final_answer})
 
         except Exception as e:
             st.error(f"Chyba: {e}")
+
 
 
 
