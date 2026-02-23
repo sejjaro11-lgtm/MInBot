@@ -127,7 +127,7 @@ def get_graham_fundamentals(ticker_symbol):
         
         pe = info.get('trailingPE', None)
         if pe is None:
-            pe_text = "Chybí (POZOR: Znamená to, že firma vykazuje čistou ztrátu a záporný zisk na akcii!)"
+            pe_text = "Chybí (Firma vykazuje čistou ztrátu a záporný zisk na akcii)"
         else:
             pe_text = str(pe)
 
@@ -135,7 +135,6 @@ def get_graham_fundamentals(ticker_symbol):
         debt = info.get('totalDebt', 0)
         cash = info.get('totalCash', 0)
         
-        # Oprava: Odstraněn znak dolaru, přidáno "USD", aby se nezobrazoval zelený rámeček
         def format_money(val):
             if val == 'Chybí' or val is None: return 'Chybí'
             if val >= 1e9: return f"{val/1e9:.2f} mld. USD"
@@ -143,15 +142,15 @@ def get_graham_fundamentals(ticker_symbol):
             return f"{val:,.2f} USD"
 
         summary = f"""
-        [SYSTÉMOVÁ POZNÁMKA - FUNDAMENTY PRO {ticker_symbol}]
+        [DATA PŘÍMO Z BURZY PRO {ticker_symbol}]
         P/E: {pe_text}
-        P/B: {pb} (Sleduj, zda je < 1.5)
+        P/B: {pb}
         Celková hotovost na účtech: {format_money(cash)}
         Celkový dluh: {format_money(debt)}
         """
         return summary
     except Exception as e:
-        return f"[SYSTÉMOVÁ POZNÁMKA] Nepodařilo se stáhnout fundamenty pro {ticker_symbol} přes yfinance."
+        return f"[CHYBA] Nepodařilo se stáhnout fundamenty pro {ticker_symbol}."
 
 # --- 5. FUNKCE PRO UČENÍ (PDF) ---
 def index_documents():
@@ -221,16 +220,16 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
         {portfolio_context}
         
         INSTRUKCE:
-        1. MLUV V PRVNÍ OSOBĚ A ZA SEBE. ZÁKAZ POUŽÍVAT JMÉNO "GRAHAM". Místo toho říkej "podle mých pravidel", "z mého pohledu analytika" atd.
+        1. MLUV V PRVNÍ OSOBĚ A ZA SEBE. NEPOUŽÍVEJ JMÉNO "GRAHAM".
         2. Pokud chce uživatel graf, vlož na konec značku: [[GRAF: TICKER | START | END]]
-        3. Pokud se tě uživatel ptá na akcii a chybí ti v tabulkách klíčová data (P/E, dluh), vlož POUZE značku: [[FUNDAMENTY: TICKER]].
-        4. TVRDÁ PRAVIDLA PRO ANALÝZU (Když dostaneš FUNDAMENTY):
-           - ROZSAH: Tvá analýza musí být velmi podrobná, jdi do hloubky a důkladně vysvětluj všechny souvislosti.
-           - MATEMATIKA: Vezmi Celkový dluh a odečti od něj Celkovou hotovost. Napiš výsledek a zhodnoť, zda je firma předlužená.
-           - ZTRÁTA: Pokud je u P/E napsáno, že chybí, vyvoď z toho jasný závěr, že firma negeneruje zisk a představuje obrovské riziko.
-           - HISTORICKÁ SÍLA VS. SOUČASNOST: Pokud je firma historicky známá, uznej to, ale upozorni, že minulá sláva neomlouvá současná špatná čísla (tzv. "Hodnotová past").
-        5. JAZYK A FORMÁT (ZÁKAZ HALUCINACÍ): Odpovídej výhradně v čisté češtině. Je ABSOLUTNĚ ZAKÁZÁNO na konec textu nebo kamkoliv jinam vkládat čínské, japonské nebo jiné asijské znaky.
-        6. Pokud jsi v předchozím kroku viděl "SYSTÉMOVÁ POZNÁMKA - FUNDAMENTY", znamená to, že data z burzy už máš. Použij je k vypracování finální podrobné expertní odpovědi.
+        3. Pokud ti chybí data k akcii (P/E, dluh), vlož POUZE značku: [[FUNDAMENTY: TICKER]]. Neomlouvej se!
+        4. TVRDÁ PRAVIDLA PRO ANALÝZU (Když dostaneš DATA Z BURZY):
+           - ROZSAH: Tvá analýza musí být velmi podrobná a vysvětlovat souvislosti.
+           - MATEMATIKA: Vezmi Celkový dluh a odečti od něj Celkovou hotovost. Napiš výsledek a zhodnoť zadlužení.
+           - ZTRÁTA: Pokud P/E chybí, jasně napiš, že firma negeneruje zisk a představuje riziko.
+           - HISTORICKÁ SÍLA VS. SOUČASNOST: Pokud je firma historicky slavná (např. Intel), upozorni, že minulá sláva neomlouvá současná špatná čísla (tzv. "Hodnotová past").
+        5. JAZYK A FORMÁT: Čistá čeština. ZÁKAZ používat asijské znaky. Nepoužívej znak dolaru pro měnu, vždy piš "USD".
+        6. ZÁKAZ OPAKOVÁNÍ ZNAČKY: Pokud v chatu vidíš "DATA PŘÍMO Z BURZY", nesmíš už nikdy vypsat značku FUNDAMENTY. Rovnou udělej analýzu.
         """
 
         try:
@@ -245,11 +244,12 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
             
             chart_ticker = None; start_year = None; end_year = None
             fund_ticker = None
-            clean_answer = raw_answer
             
+            # Bezpečné odstranění značek z textu
+            clean_answer = re.sub(r"\[\[\s*FUNDAMENTY:\s*.*?\s*\]\]", "", raw_answer, flags=re.IGNORECASE).strip()
             if chart_match:
                 content = chart_match.group(1)
-                clean_answer = clean_answer.replace(chart_match.group(0), "").strip()
+                clean_answer = re.sub(r"\[\[\s*GRAF:\s*.*?\s*\]\]", "", clean_answer, flags=re.IGNORECASE).strip()
                 parts = [p.strip() for p in content.split('|')]
                 if len(parts) >= 1: chart_ticker = parts[0]
                 if len(parts) >= 2: start_year = parts[1] if parts[1] else None
@@ -257,8 +257,6 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
 
             if fund_match:
                 fund_ticker = fund_match.group(1).strip()
-                # Oprava: Smažeme jakoukoliv omáčku před načítáním fundamentů, abychom uživatele nezahlcovali nesmysly
-                clean_answer = ""
             
             if clean_answer:
                 st.markdown(clean_answer)
@@ -274,15 +272,23 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
             if fund_ticker:
                 with st.spinner(f"Stahuji data přímo z burzy pro {fund_ticker}..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
-                    st.session_state.messages.append({"role": "system", "content": fund_context})
+                    
+                    # DŮLEŽITÉ: Nyní dáváme botovi data jako zprávu "od tebe" (user), aby musel odpovědět.
+                    st.session_state.messages.append({"role": "user", "content": fund_context})
                     
                     response_2 = client.chat.completions.create(
                         model="gpt-4o",
                         messages=[{"role": "system", "content": system_prompt}] + st.session_state.messages
                     )
                     final_answer = response_2.choices[0].message.content
+                    
+                    # Absolutní pojistka proti opakování značky
+                    final_answer = re.sub(r"\[\[\s*FUNDAMENTY:\s*.*?\s*\]\]", "", final_answer, flags=re.IGNORECASE).strip()
+                    if not final_answer:
+                        final_answer = "Omlouvám se, data se podařilo stáhnout, ale nastala chyba při generování textu."
+
                     st.markdown(final_answer)
                     st.session_state.messages.append({"role": "assistant", "content": final_answer})
 
         except Exception as e:
-            st.error(f"Chyba: {e}")
+            st.error(f"Chyba při komunikaci s AI: {e}")
