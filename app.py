@@ -54,10 +54,8 @@ try:
     DATA ZE SLEDOVANÝCH AKCIÍ A INDEXŮ:
     {sledovane_txt}
     """
-    st.toast("✅ Data z trhů byla úspěšně načtena.", icon="📈")
-
 except Exception as e:
-    st.toast(f"⚠️ Nepodařilo se načíst tabulky: {e}", icon="⚠️")
+    pass
 
 # --- 4. FUNKCE PRO VYKRESLENÍ A ANALÝZU GRAFU ---
 def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
@@ -99,20 +97,20 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
                 change_pct = ((last_price - first_price) / first_price) * 100
                 
                 col1, col2, col3 = st.columns(3)
-                col1.metric("Cena na konci", f"{last_price:,.2f}")
+                col1.metric("Cena na konci", f"{last_price:,.2f} USD")
                 col2.metric("Změna", f"{change_pct:+.2f} %")
-                col3.metric("Nejvyšší bod (ATH)", f"{float(y_data.max()):,.2f}")
+                col3.metric("Nejvyšší bod (ATH)", f"{float(y_data.max()):,.2f} USD")
             except Exception:
                 pass
 
             stats_summary = f"""
             [SYSTÉMOVÁ POZNÁMKA - VÝSLEDEK ANALÝZY GRAFU PRO {ticker_symbol}]
             Zobrazené období: {start_year if start_year else 'Začátek'} - {end_year if end_year else 'Dnes'}
-            Počáteční cena: {first_price:.2f}
-            Konečná cena: {last_price:.2f}
+            Počáteční cena: {first_price:.2f} USD
+            Konečná cena: {last_price:.2f} USD
             Celková změna: {change_pct:.2f}%
-            Historické maximum (High): {float(y_data.max()):.2f} v roce {y_data.idxmax().year}
-            Historické minimum (Low): {float(y_data.min()):.2f} v roce {y_data.idxmin().year}
+            Historické maximum (High): {float(y_data.max()):.2f} USD v roce {y_data.idxmax().year}
+            Historické minimum (Low): {float(y_data.min()):.2f} USD v roce {y_data.idxmin().year}
             """
             
     except Exception as e:
@@ -137,11 +135,12 @@ def get_graham_fundamentals(ticker_symbol):
         debt = info.get('totalDebt', 0)
         cash = info.get('totalCash', 0)
         
+        # Oprava: Odstraněn znak dolaru, přidáno "USD", aby se nezobrazoval zelený rámeček
         def format_money(val):
             if val == 'Chybí' or val is None: return 'Chybí'
-            if val >= 1e9: return f"${val/1e9:.2f} mld."
-            if val >= 1e6: return f"${val/1e6:.2f} mil."
-            return f"${val:,.2f}"
+            if val >= 1e9: return f"{val/1e9:.2f} mld. USD"
+            if val >= 1e6: return f"{val/1e6:.2f} mil. USD"
+            return f"{val:,.2f} USD"
 
         summary = f"""
         [SYSTÉMOVÁ POZNÁMKA - FUNDAMENTY PRO {ticker_symbol}]
@@ -226,10 +225,12 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
         2. Pokud chce uživatel graf, vlož na konec značku: [[GRAF: TICKER | START | END]]
         3. Pokud se tě uživatel ptá na akcii a chybí ti v tabulkách klíčová data (P/E, dluh), vlož POUZE značku: [[FUNDAMENTY: TICKER]].
         4. TVRDÁ PRAVIDLA PRO ANALÝZU (Když dostaneš FUNDAMENTY):
+           - ROZSAH: Tvá analýza musí být velmi podrobná, jdi do hloubky a důkladně vysvětluj všechny souvislosti.
            - MATEMATIKA: Vezmi Celkový dluh a odečti od něj Celkovou hotovost. Napiš výsledek a zhodnoť, zda je firma předlužená.
-           - ZTRÁTA: Pokud je u P/E napsáno, že chybí, vyvoď z toho jasný závěr, že firma negeneruje zisk a představuje z mého pohledu obrovské riziko.
-           - HISTORICKÁ SÍLA VS. SOUČASNOST: Pokud je firma historicky známá (např. Intel), uznej to, ale tvrdě upozorni, že minulá sláva neomlouvá současná špatná čísla. Považuj to za tzv. "Hodnotovou past" (Value Trap). Aktuální ochrana kapitálu je přednější než nostalgie.
-        5. Pokud jsi v předchozím kroku viděl "SYSTÉMOVÁ POZNÁMKA - FUNDAMENTY", znamená to, že data z burzy už máš. Použij je k vypracování finální expertní odpovědi.
+           - ZTRÁTA: Pokud je u P/E napsáno, že chybí, vyvoď z toho jasný závěr, že firma negeneruje zisk a představuje obrovské riziko.
+           - HISTORICKÁ SÍLA VS. SOUČASNOST: Pokud je firma historicky známá, uznej to, ale upozorni, že minulá sláva neomlouvá současná špatná čísla (tzv. "Hodnotová past").
+        5. JAZYK A FORMÁT (ZÁKAZ HALUCINACÍ): Odpovídej výhradně v čisté češtině. Je ABSOLUTNĚ ZAKÁZÁNO na konec textu nebo kamkoliv jinam vkládat čínské, japonské nebo jiné asijské znaky.
+        6. Pokud jsi v předchozím kroku viděl "SYSTÉMOVÁ POZNÁMKA - FUNDAMENTY", znamená to, že data z burzy už máš. Použij je k vypracování finální podrobné expertní odpovědi.
         """
 
         try:
@@ -256,7 +257,8 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
 
             if fund_match:
                 fund_ticker = fund_match.group(1).strip()
-                clean_answer = clean_answer.replace(fund_match.group(0), "").strip()
+                # Oprava: Smažeme jakoukoliv omáčku před načítáním fundamentů, abychom uživatele nezahlcovali nesmysly
+                clean_answer = ""
             
             if clean_answer:
                 st.markdown(clean_answer)
