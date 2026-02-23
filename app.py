@@ -121,13 +121,12 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
         
     return stats_summary
 
-# --- 4.5 FUNKCE PRO FUNDAMENTÁLNÍ DATA (GRAHAM) ---
+# --- 4.5 FUNKCE PRO FUNDAMENTÁLNÍ DATA ---
 def get_graham_fundamentals(ticker_symbol):
     try:
         stock = yf.Ticker(ticker_symbol)
         info = stock.info
         
-        # Vylepšené získávání P/E s vysvětlením pro bota
         pe = info.get('trailingPE', None)
         if pe is None:
             pe_text = "Chybí (POZOR: Znamená to, že firma vykazuje čistou ztrátu a záporný zisk na akcii!)"
@@ -147,7 +146,7 @@ def get_graham_fundamentals(ticker_symbol):
         summary = f"""
         [SYSTÉMOVÁ POZNÁMKA - FUNDAMENTY PRO {ticker_symbol}]
         P/E: {pe_text}
-        P/B: {pb} (Graham by sledoval, zda je < 1.5)
+        P/B: {pb} (Sleduj, zda je < 1.5)
         Celková hotovost na účtech: {format_money(cash)}
         Celkový dluh: {format_money(debt)}
         """
@@ -187,7 +186,6 @@ with st.sidebar:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Vykreslení historie
 for msg in st.session_state.messages:
     if msg["role"] == "assistant" and "chart_data" in msg:
         if msg["content"]:
@@ -215,7 +213,7 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
                 context_books += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
         system_prompt = f"""
-        Jsi MInBot, investiční analytik s myšlením Benjamina Grahama.
+        Jsi MInBot, nekompromisní investiční asistent. Tvá vnitřní logika stojí na principech hodnotového investování, ale jsi to TY, kdo radí.
         
         ZNALOSTI Z KNIH:
         {context_books}
@@ -224,13 +222,14 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
         {portfolio_context}
         
         INSTRUKCE:
-        1. MLUV V PRVNÍ OSOBĚ.
+        1. MLUV V PRVNÍ OSOBĚ A ZA SEBE. ZÁKAZ POUŽÍVAT JMÉNO "GRAHAM". Místo toho říkej "podle mých pravidel", "z mého pohledu analytika" atd.
         2. Pokud chce uživatel graf, vlož na konec značku: [[GRAF: TICKER | START | END]]
         3. Pokud se tě uživatel ptá na akcii a chybí ti v tabulkách klíčová data (P/E, dluh), vlož POUZE značku: [[FUNDAMENTY: TICKER]].
         4. TVRDÁ PRAVIDLA PRO ANALÝZU (Když dostaneš FUNDAMENTY):
-           - NESMÍŠ uživateli psát "je klíčové to porovnat". TY to musíš porovnat!
            - MATEMATIKA: Vezmi Celkový dluh a odečti od něj Celkovou hotovost. Napiš výsledek a zhodnoť, zda je firma předlužená.
-           - ZTRÁTA: Pokud je u P/E napsáno, že chybí, vyvoď z toho jasný závěr, že firma negeneruje zisk a pro Grahama představuje obrovské riziko. Vynes jasný a sebevědomý analytický závěr.
+           - ZTRÁTA: Pokud je u P/E napsáno, že chybí, vyvoď z toho jasný závěr, že firma negeneruje zisk a představuje z mého pohledu obrovské riziko.
+           - HISTORICKÁ SÍLA VS. SOUČASNOST: Pokud je firma historicky známá (např. Intel), uznej to, ale tvrdě upozorni, že minulá sláva neomlouvá současná špatná čísla. Považuj to za tzv. "Hodnotovou past" (Value Trap). Aktuální ochrana kapitálu je přednější než nostalgie.
+        5. Pokud jsi v předchozím kroku viděl "SYSTÉMOVÁ POZNÁMKA - FUNDAMENTY", znamená to, že data z burzy už máš. Použij je k vypracování finální expertní odpovědi.
         """
 
         try:
