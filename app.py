@@ -185,6 +185,7 @@ with st.sidebar:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Vykreslení historie - IGNORUJE SKRYTÉ ZPRÁVY
 for msg in st.session_state.messages:
     if msg.get("hidden"):
         continue
@@ -213,7 +214,23 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
             if 'text' in res['metadata']:
                 context_books += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
-        system_prompt = f"""
+        # =======================================================
+        # MOZEK 1: DISPEČER (Slouží pouze ke stažení dat z burzy)
+        # =======================================================
+        system_prompt_router = f"""
+        Jsi MInBot, investiční asistent.
+        
+        ÚKOL:
+        Uživatel žádá o analýzu akcie (např. AAPL). Ty v tuto chvíli NEMÁŠ žádná aktuální čísla.
+        NESMÍŠ psát žádný text, nesmíš psát analýzu. 
+        Tvá JEDINÁ povolená odpověď je tato speciální značka: [FETCH: TICKER] (například [FETCH: AAPL]).
+        Vypiš ji a nic jiného.
+        """
+
+        # =======================================================
+        # MOZEK 2: ČISTÝ ANALYTIK (Nezná značku FETCH a tvoří finální text)
+        # =======================================================
+        system_prompt_analyst = f"""
         Jsi MInBot, nekompromisní a přesný investiční analytik.
         
         ZNALOSTI Z 10-K REPORTŮ A KNIH:
@@ -222,32 +239,29 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         DATA Z TABULEK:
         {portfolio_context}
         
-        --- FÁZE 1: KONTROLA DAT (ABSOLUTNÍ PRIORITA) ---
-        Podívej se do zadání uživatele a historie. Máš k požadované akcii (např. AAPL) k dispozici text, který začíná "[DATA PŘÍMO Z BURZY PRO...]" s přesnými čísly o dluhu a hotovosti?
-        - POKUD NE: ZAKAZUJI ti psát text. Tvá JEDINÁ povolená odpověď je přesně tato značka: [FETCH: TICKER] (například: [FETCH: AAPL]).
-        - POKUD ANO: Přecházíš do Fáze 2.
-
-        --- FÁZE 2: TVORBA ANALÝZY (POUZE POKUD MÁŠ DATA Z BURZY) ---
-        Nyní máš přesná burzovní data. Vypracuj špičkovou analýzu s profesionálními nadpisy.
+        TVŮJ ÚKOL:
+        Právě jsi obdržel od uživatele "DATA PŘÍMO Z BURZY". Teprve teď můžeš psát. Vypracuj na jejich základě špičkovou, tvrdou analýzu.
         
         TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA PRO TEXT:
-        1. POVINNÁ ČÍSLA: Je ABSOLUTNĚ ZAKÁZÁNO mluvit o dluhu a hotovosti jen obecně (např. "firma má vysokou hotovost"). MUSÍŠ do textu DOSLOVA VYPSAT přesná čísla, která jsi dostal z burzy. Příklad: "Společnost má hotovost ve výši XY miliard USD a celkový dluh YZ miliard USD."
+        1. POVINNÁ ČÍSLA: Je ABSOLUTNĚ ZAKÁZÁNO mluvit o dluhu a hotovosti jen obecně. MUSÍŠ do textu DOSLOVA VYPSAT přesná čísla, která jsi dostal z burzy. Příklad: "Společnost má hotovost ve výši XY miliard USD a celkový dluh YZ miliard USD."
         2. MATEMATIKA: Jakmile vypíšeš přesná čísla, odečti hotovost od dluhu. Výsledek matematicky vyčísli v USD a zhodnoť zadlužení.
         3. P/E: Vždy napiš přesnou hodnotu P/E. Pokud P/E chybí, označ to jako tvrdé riziko.
-        4. RIZIKA Z 10-K: Zakaž si obecné fráze. Z dodaných textů 10-K vytáhni velmi specifické detaily.
-        5. Mluv za sebe v první osobě. Čistá čeština.
+        4. RIZIKA Z 10-K: Zakaž si obecné fráze. Z dodaných textů 10-K vytáhni velmi specifické detaily (konkrétní produkty, soudy, plány).
+        5. FORMA: Použij profesionální nadpisy jako "### Aktuální ocenění a dluh" a "### Vhledy z výroční zprávy 10-K".
+        6. Mluv za sebe v první osobě. Čistá čeština.
         """
 
-        def get_api_messages():
-            msgs = [{"role": "system", "content": system_prompt}]
+        def get_api_messages(prompt_to_use):
+            msgs = [{"role": "system", "content": prompt_to_use}]
             for m in st.session_state.messages:
                 msgs.append({"role": m["role"], "content": m["content"]})
             return msgs
 
         try:
+            # 1. Zavoláme Mozek 1 (Dispečera)
             response = client.chat.completions.create(
                 model="gpt-4o",
-                messages=get_api_messages()
+                messages=get_api_messages(system_prompt_router)
             )
             raw_answer = response.choices[0].message.content or ""
             
@@ -259,17 +273,18 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                 with st.spinner(f"Stahuji data přímo z burzy pro {fund_ticker}..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
-                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní MÁŠ data z burzy. Vypracuj tu podrobnou analýzu. Pamatuj na absolutní pravidlo: Musíš do textu výslovně napsat ty přesné částky v USD, které vidíš nahoře, a pak je od sebe odečíst! Značku [FETCH] už nesmíš použít!"
+                    # Tajně podstrčíme data do chatu
+                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna čísla. Vypracuj podrobnou analýzu podle pravidel. Výslovně opiš do textu ty částky v USD a odečti je od sebe!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
+                    # 2. Zavoláme Mozek 2 (Analytika) - Tento mozek netuší nic o značce FETCH
                     response_2 = client.chat.completions.create(
                         model="gpt-4o",
-                        messages=get_api_messages()
+                        messages=get_api_messages(system_prompt_analyst)
                     )
                     final_answer = response_2.choices[0].message.content or ""
                     
-                    final_answer = re.sub(r"\[FETCH:\s*([A-Za-z0-9]+)\]", "", final_answer, flags=re.IGNORECASE).strip()
-                    
+                    # Pro jistotu ošetření grafů
                     chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", final_answer, re.IGNORECASE)
                     chart_ticker = None; start_year = None; end_year = None
                     if chart_match:
@@ -281,7 +296,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                         if len(parts) >= 3: end_year = parts[2] if parts[2] else None
 
                     if not final_answer:
-                        final_answer = "Omlouvám se, data se stáhla, ale narazil jsem na chybu při psaní textu."
+                        final_answer = "Omlouvám se, nastala neočekávaná chyba při psaní textu."
                         
                     st.markdown(final_answer)
                     st.session_state.messages.append({"role": "assistant", "content": final_answer, "hidden": False, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
@@ -291,6 +306,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                         if stats_context:
                             st.session_state.messages.append({"role": "user", "content": stats_context, "hidden": True})
             else:
+                # Pokud dispečer usoudil, že nejde o dotaz na akcii (např. běžná konverzace)
                 clean_answer = raw_answer
                 chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", clean_answer, re.IGNORECASE)
                 chart_ticker = None; start_year = None; end_year = None
@@ -304,15 +320,10 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                     if len(parts) >= 3: end_year = parts[2] if parts[2] else None
                 
                 if not clean_answer.strip():
-                    clean_answer = "Omlouvám se, nastala chyba v odpovědi (vrácen prázdný text)."
+                    clean_answer = "Omlouvám se, nerozuměl jsem dotazu."
                     
                 st.markdown(clean_answer)
                 st.session_state.messages.append({"role": "assistant", "content": clean_answer, "hidden": False, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
-                
-                if chart_ticker:
-                    stats_context = analyze_and_plot(chart_ticker, start_year, end_year)
-                    if stats_context:
-                        st.session_state.messages.append({"role": "user", "content": stats_context, "hidden": True})
 
         except Exception as e:
             st.error(f"Chyba při komunikaci s AI: {e}")
