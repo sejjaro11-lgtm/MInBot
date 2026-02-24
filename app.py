@@ -104,13 +104,11 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
                 pass
 
             stats_summary = f"""
-            [SYSTÉMOVÁ POZNÁMKA - VÝSLEDEK ANALÝZY GRAFU PRO {ticker_symbol}]
+            [VÝSLEDEK ANALÝZY GRAFU PRO {ticker_symbol}]
             Zobrazené období: {start_year if start_year else 'Začátek'} - {end_year if end_year else 'Dnes'}
             Počáteční cena: {first_price:.2f} USD
             Konečná cena: {last_price:.2f} USD
             Celková změna: {change_pct:.2f}%
-            Historické maximum (High): {float(y_data.max()):.2f} USD v roce {y_data.idxmax().year}
-            Historické minimum (Low): {float(y_data.min()):.2f} USD v roce {y_data.idxmin().year}
             """
             
     except Exception as e:
@@ -184,12 +182,14 @@ with st.sidebar:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Vykreslení historie - velmi zjednodušené a odolné proti pádům
+# Vykreslení historie - NYNÍ IGNORUJE SKRYTÉ ZPRÁVY
 for msg in st.session_state.messages:
+    if msg.get("hidden"):
+        continue
+        
     if msg["role"] == "assistant":
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-        # Pokud má zpráva uložená data o grafu, vykreslí ho
         if msg.get("chart_data") and msg["chart_data"][0]:
             c_ticker, c_start, c_end = msg["chart_data"]
             analyze_and_plot(c_ticker, c_start, c_end)
@@ -198,7 +198,8 @@ for msg in st.session_state.messages:
             st.markdown(msg["content"])
 
 if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    # Uložíme uživatelův dotaz (viditelný)
+    st.session_state.messages.append({"role": "user", "content": prompt, "hidden": False})
     with st.chat_message("user"):
         st.markdown(prompt)
 
@@ -234,18 +235,22 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
         5. JAZYK: Čistá čeština. ZÁKAZ používat asijské znaky. Měna vždy jako "USD".
         """
 
+        # Funkce, která připraví zprávy pro API a zahodí naše interní klíče jako 'hidden'
+        def get_api_messages():
+            msgs = [{"role": "system", "content": system_prompt}]
+            for m in st.session_state.messages:
+                msgs.append({"role": m["role"], "content": m["content"]})
+            return msgs
+
         try:
             # 1. Volání AI
             response = client.chat.completions.create(
                 model="gpt-4o",
-                messages=[{"role": "system", "content": system_prompt}] + st.session_state.messages
+                messages=get_api_messages()
             )
             raw_answer = response.choices[0].message.content or ""
             
-            # Záchyt bezpečné značky
             fetch_match = re.search(r"\$FETCH:\s*([A-Za-z0-9]+)\$", raw_answer, re.IGNORECASE)
-            chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", raw_answer, re.IGNORECASE)
-            chart_ticker = None; start_year = None; end_year = None
             
             if fetch_match:
                 fund_ticker = fetch_match.group(1).strip().upper()
@@ -253,48 +258,65 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
                 with st.spinner(f"Stahuji data přímo z burzy pro {fund_ticker}..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
-                    # Přidáme data do paměti jako skrytou "system" zprávu
-                    st.session_state.messages.append({"role": "system", "content": fund_context})
+                    # TRIK: Pošleme stažená data AI jako zprávu "od uživatele", aby ho to donutilo odpovědět na tvůj dotaz, ale zprávu skryjeme.
+                    hidden_injection = f"Zde jsou data z burzy pro tvou analýzu:\n{fund_context}\n\nNyní vypracuj podrobnou analýzu. Značka $FETCH$ je nyní absolutně zakázána!"
+                    st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
-                    # Zavoláme AI znovu pro finální odpověď s novými daty
+                    # 2. Volání AI s novými daty (a bez uložení toho původního zmateného pokusu)
                     response_2 = client.chat.completions.create(
                         model="gpt-4o",
-                        messages=[{"role": "system", "content": system_prompt}] + st.session_state.messages
+                        messages=get_api_messages()
                     )
                     final_answer = response_2.choices[0].message.content or ""
                     
-                    # Bezpečnostní vyčištění případných zbytků značek
+                    # Očištění o případné zbytky
                     final_answer = re.sub(r"\$FETCH:\s*([A-Za-z0-9]+)\$", "", final_answer, flags=re.IGNORECASE).strip()
-                    final_answer = re.sub(r"\[\[GRAF:\s*(.*?)\]\]", "", final_answer, flags=re.IGNORECASE).strip()
+                    
+                    # Zpracování grafu (pokud by ho AI chtěla v druhé fázi)
+                    chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", final_answer, re.IGNORECASE)
+                    chart_ticker = None; start_year = None; end_year = None
+                    if chart_match:
+                        content = chart_match.group(1)
+                        final_answer = final_answer.replace(chart_match.group(0), "").strip()
+                        parts = [p.strip() for p in content.split('|')]
+                        if len(parts) >= 1: chart_ticker = parts[0]
+                        if len(parts) >= 2: start_year = parts[1] if parts[1] else None
+                        if len(parts) >= 3: end_year = parts[2] if parts[2] else None
 
-                    # Pojistka proti prázdné bublině
                     if not final_answer:
-                        final_answer = "Omlouvám se, data o firmě se mi podařilo stáhnout, ale nastala chyba při psaní analýzy."
+                        final_answer = "Omlouvám se, data se stáhla, ale narazil jsem na chybu při psaní textu."
                         
                     st.markdown(final_answer)
-                    st.session_state.messages.append({"role": "assistant", "content": final_answer})
+                    st.session_state.messages.append({"role": "assistant", "content": final_answer, "hidden": False, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
+                    
+                    if chart_ticker:
+                        stats_context = analyze_and_plot(chart_ticker, start_year, end_year)
+                        if stats_context:
+                            st.session_state.messages.append({"role": "user", "content": stats_context, "hidden": True})
             else:
-                # AI rovnou odpověděla
+                # Normální odpověď bez stahování
                 clean_answer = raw_answer
+                chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", clean_answer, re.IGNORECASE)
+                chart_ticker = None; start_year = None; end_year = None
+                
                 if chart_match:
                     content = chart_match.group(1)
-                    clean_answer = re.sub(r"\[\[GRAF:\s*(.*?)\]\]", "", clean_answer, flags=re.IGNORECASE).strip()
+                    clean_answer = clean_answer.replace(chart_match.group(0), "").strip()
                     parts = [p.strip() for p in content.split('|')]
                     if len(parts) >= 1: chart_ticker = parts[0]
                     if len(parts) >= 2: start_year = parts[1] if parts[1] else None
                     if len(parts) >= 3: end_year = parts[2] if parts[2] else None
                 
-                # Pojistka proti prázdné bublině
                 if not clean_answer.strip():
                     clean_answer = "Omlouvám se, nastala chyba v odpovědi (vrácen prázdný text)."
                     
                 st.markdown(clean_answer)
-                st.session_state.messages.append({"role": "assistant", "content": clean_answer, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
+                st.session_state.messages.append({"role": "assistant", "content": clean_answer, "hidden": False, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
                 
                 if chart_ticker:
                     stats_context = analyze_and_plot(chart_ticker, start_year, end_year)
                     if stats_context:
-                        st.session_state.messages.append({"role": "system", "content": stats_context})
+                        st.session_state.messages.append({"role": "user", "content": stats_context, "hidden": True})
 
         except Exception as e:
             st.error(f"Chyba při komunikaci s AI: {e}")
