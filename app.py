@@ -221,18 +221,19 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
         DATA Z TABULEK:
         {portfolio_context}
         
-        INSTRUKCE:
+        --- FÁZE 1: ZÍSKÁNÍ DAT (KRITICKÉ PRAVIDLO) ---
+        Pokud se tě uživatel ptá na analýzu konkrétní akcie (např. INTC, AAPL) a ty v historii ZATÍM NEMÁŠ její aktuální čísla z burzy (dluh, hotovost, P/E),
+        ZAKAZUJI TI PSÁT JAKOUKOLIV ANALÝZU! 
+        Místo toho musíš vypsat POUZE tuto jedinou značku, abych ti data dodal:
+        [[FUNDAMENTY: TICKER]] (například: [[FUNDAMENTY: INTC]])
+        
+        --- FÁZE 2: TVORBA ANALÝZY (AŽ DOSTANEŠ DATA) ---
+        Když už v chatu vidíš "DATA PŘÍMO Z BURZY", nesmíš použít značku FUNDAMENTY. Místo toho se rozepiš a dodržuj toto:
         1. MLUV V PRVNÍ OSOBĚ A ZA SEBE. NEPOUŽÍVEJ JMÉNO "GRAHAM".
-        2. Pokud chce uživatel graf, vlož na konec značku: [[GRAF: TICKER | START | END]]
-        3. POKUD NEMÁŠ DATA K AKCII (P/E, dluh), NESMÍŠ PSÁT ŽÁDNÝ TEXT ANI SE OMLOUVAT!
-           Místo toho MUSÍŠ napsat POUZE tuto značku a nic jiného:
-           $FETCH: TICKER$ (např. $FETCH: INTC$)
-        4. TVRDÁ PRAVIDLA PRO ANALÝZU (Když dostaneš DATA PŘÍMO Z BURZY):
-           - ROZSAH: Tvá analýza musí být velmi podrobná a vysvětlovat souvislosti.
-           - MATEMATIKA: Vezmi Celkový dluh a odečti od něj Celkovou hotovost. Napiš výsledek a zhodnoť zadlužení.
-           - ZTRÁTA: Pokud P/E chybí, jasně napiš, že firma negeneruje zisk a představuje riziko.
-           - HISTORICKÁ SÍLA VS. SOUČASNOST: Upozorni, že minulá sláva neomlouvá současná špatná čísla ("Hodnotová past").
-        5. JAZYK: Čistá čeština. ZÁKAZ používat asijské znaky. Měna vždy jako "USD".
+        2. Vezmi Celkový dluh a odečti od něj Celkovou hotovost z dodaných dat. Napiš výsledek a zhodnoť zadlužení.
+        3. Pokud P/E chybí (nebo je firma ve ztrátě), jasně to napiš jako investiční riziko.
+        4. Pokud je firma historicky slavná (např. Intel), upozorni na "Hodnotovou past".
+        5. Čistá čeština. Žádné asijské znaky. Měna vždy jako "USD".
         """
 
         # Funkce, která připraví zprávy pro API a zahodí naše interní klíče jako 'hidden'
@@ -250,29 +251,30 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
             )
             raw_answer = response.choices[0].message.content or ""
             
-            fetch_match = re.search(r"\$FETCH:\s*([A-Za-z0-9]+)\$", raw_answer, re.IGNORECASE)
+            # Hledání naší osvědčené značky
+            fund_match = re.search(r"\[\[FUNDAMENTY:\s*([A-Za-z0-9]+)\]\]", raw_answer, re.IGNORECASE)
             
-            if fetch_match:
-                fund_ticker = fetch_match.group(1).strip().upper()
+            if fund_match:
+                fund_ticker = fund_match.group(1).strip().upper()
                 
                 with st.spinner(f"Stahuji data přímo z burzy pro {fund_ticker}..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
-                    # TRIK: Pošleme stažená data AI jako zprávu "od uživatele", aby ho to donutilo odpovědět na tvůj dotaz, ale zprávu skryjeme.
-                    hidden_injection = f"Zde jsou data z burzy pro tvou analýzu:\n{fund_context}\n\nNyní vypracuj podrobnou analýzu. Značka $FETCH$ je nyní absolutně zakázána!"
+                    # TRIK: Pošleme stažená data AI jako skrytou zprávu "od uživatele"
+                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna potřebná čísla. Vypracuj na jejich základě tu velmi podrobnou analýzu. Značku [[FUNDAMENTY]] už nevypisuj!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
-                    # 2. Volání AI s novými daty (a bez uložení toho původního zmateného pokusu)
+                    # 2. Volání AI s novými daty
                     response_2 = client.chat.completions.create(
                         model="gpt-4o",
                         messages=get_api_messages()
                     )
                     final_answer = response_2.choices[0].message.content or ""
                     
-                    # Očištění o případné zbytky
-                    final_answer = re.sub(r"\$FETCH:\s*([A-Za-z0-9]+)\$", "", final_answer, flags=re.IGNORECASE).strip()
+                    # Očištění o případné zbytky značek
+                    final_answer = re.sub(r"\[\[FUNDAMENTY:\s*([A-Za-z0-9]+)\]\]", "", final_answer, flags=re.IGNORECASE).strip()
                     
-                    # Zpracování grafu (pokud by ho AI chtěla v druhé fázi)
+                    # Zpracování grafu
                     chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", final_answer, re.IGNORECASE)
                     chart_ticker = None; start_year = None; end_year = None
                     if chart_match:
