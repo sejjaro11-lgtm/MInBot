@@ -166,7 +166,6 @@ def index_documents():
                 extract = page.extract_text()
                 if extract: text += extract + " "
             
-            # Zmenšujeme kousky a zvětšujeme překryv pro lepší kontext v 10-K
             chunk_size = 800 
             overlap = 200
             chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size - overlap)]
@@ -209,7 +208,8 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
 
     with st.chat_message("assistant"):
         query_vector = model.encode(prompt).tolist()
-        results = index.query(vector=query_vector, top_k=5, include_metadata=True)
+        # Zvýšení počtu extrahovaných segmentů na 8 pro hlubší vhled z 10-K
+        results = index.query(vector=query_vector, top_k=8, include_metadata=True)
         
         context_books = ""
         for res in results['matches']:
@@ -217,26 +217,26 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                 context_books += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
         system_prompt = f"""
-        Jsi MInBot, nekompromisní investiční asistent.
+        Jsi MInBot, nekompromisní, tvrdý investiční analytik. Nesnášíš "omáčku" a obecné fráze.
         
-        ZNALOSTI Z KNIH A 10-K REPORTŮ:
+        ZNALOSTI Z 10-K REPORTŮ A KNIH:
         {context_books}
         
         DATA Z TABULEK:
         {portfolio_context}
         
-        --- FÁZE 1: ZÍSKÁNÍ DAT ---
-        Pokud se tě uživatel ptá na analýzu konkrétní akcie a ty ZATÍM NEMÁŠ její aktuální čísla z burzy (dluh, hotovost, P/E),
-        Místo analýzy MUSÍŠ vypsat POUZE tuto značku: $FETCH: TICKER$ (např. $FETCH: INTC$)
+        --- ABSOLUTNÍ PRAVIDLO PRO FÁZI 1 (ZÍSKÁNÍ DAT) ---
+        Pokud se tě uživatel ptá na akcii (např. AAPL) a ty ZATÍM NEMÁŠ v této konverzaci zobrazená aktuální, přesná čísla o dluhu a hotovosti přímo z burzy:
+        JE TI PŘÍSNĚ ZAKÁZÁNO PSÁT JAKÝKOLIV TEXT NEBO ANALÝZU! ZAKAZUJI TI TVOŘIT ODPOVĚĎ!
+        Musíš POUZE a JENOM vypsat tuto značku, abychom data stáhli:
+        $FETCH: TICKER$ (např. $FETCH: AAPL$)
         
-        --- FÁZE 2: TVORBA KOMPLEXNÍ ANALÝZY (AŽ DOSTANEŠ DATA) ---
-        Pokud už máš všechna data, rozepiš se a dodržuj toto:
-        1. MLUV V PRVNÍ OSOBĚ A ZA SEBE. NEPOUŽÍVEJ JMÉNO "GRAHAM", řiď se ale jeho hodnotovým kodexem.
-        2. SYNTÉZA (DŮLEŽITÉ): Dokonale propoj aktuální data z burzy s informacemi, které máš v sekci "ZNALOSTI Z KNIH A 10-K REPORTŮ". Pokud tam vidíš rizika nebo plány managementu, aktivně je zapoj do textu!
-        3. MATEMATIKA: Vezmi Celkový dluh a odečti od něj Celkovou hotovost. Zhodnoť výsledek a zadlužení.
-        4. ZTRÁTA: Pokud P/E chybí, jasně to označ jako zásadní riziko (firma negeneruje zisk).
-        5. HISTORIE: Upozorni na "Hodnotovou past", pokud má firma špatná čísla, ale slavnou minulost.
-        6. JAZYK: Čistá čeština. Měna vždy jako "USD". Žádné asijské znaky.
+        --- PRAVIDLA PRO FÁZI 2 (KDYŽ MÁŠ PŘESNÁ DATA Z BURZY) ---
+        Pokud vidíš zprávu "Zde jsou data z burzy...", vypracuj tvrdou analýzu:
+        1. PŘESNÁ MATEMATIKA (POVINNÉ): Vezmi přesné číslo pro "Celkový dluh" a odečti "Celkovou hotovost". Napiš přesný výsledek v USD. Zhodnoť, zda je firma předlužená.
+        2. KONKRÉTNÍ 10-K RIZIKA (POVINNÉ): Zakaž si obecné fráze (jako "geopolitická nestabilita"). Přečti si dodané "ZNALOSTI Z 10-K REPORTŮ" a vypiš KONKRÉTNÍ zmíněné detaily, konkrétní produkty nebo situace, které tam firma řeší. Pokud budeš příliš obecný, selhal jsi.
+        3. MLUV V PRVNÍ OSOBĚ A ZA SEBE. NEPOUŽÍVEJ JMÉNO "GRAHAM".
+        4. Čistá čeština, žádné asijské znaky.
         """
 
         def get_api_messages():
@@ -261,7 +261,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                 with st.spinner(f"Stahuji data přímo z burzy pro {fund_ticker}..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
-                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna potřebná čísla. Vypracuj komplexní analýzu, kde tyto fundamenty propojíš se znalostmi z 10-K reportů a knih z tvé databáze. Značku $FETCH$ už nevypisuj!"
+                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna potřebná čísla. Udělej matematiku dluhu. A hlavně: vytáhni z 10-K naprosto konkrétní detaily a ukaž, že nejsi líný. Značku $FETCH$ už nevypisuj!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
                     # 2. Volání AI s novými daty a PDF kontextem
