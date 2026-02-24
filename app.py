@@ -156,7 +156,7 @@ def index_documents():
     if not os.path.exists(data_dir): return
     files = [f for f in os.listdir(data_dir) if f.endswith(".pdf")]
     if not files: return
-    status = st.status("MInBot se učí...")
+    status = st.status("MInBot studuje hloubkové zprávy 10-K a PDF...")
     for filename in files:
         try:
             path = os.path.join(data_dir, filename)
@@ -165,13 +165,17 @@ def index_documents():
             for page in reader.pages:
                 extract = page.extract_text()
                 if extract: text += extract + " "
-            chunk_size = 1000
-            chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size - 100)]
+            
+            # Zmenšujeme kousky a zvětšujeme překryv pro lepší kontext v 10-K
+            chunk_size = 800 
+            overlap = 200
+            chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size - overlap)]
+            
             for i, chunk in enumerate(chunks):
                 vector = model.encode(chunk).tolist()
                 index.upsert(vectors=[{"id": f"{filename}_{i}", "values": vector, "metadata": {"text": chunk, "source": filename}}])
         except Exception: pass      
-    status.update(label="✅ Učení dokončeno!", state="complete")
+    status.update(label="✅ Studium dokončeno! Paměť zaktualizována.", state="complete")
 
 with st.sidebar:
     st.header("🧠 Správa znalostí")
@@ -182,7 +186,7 @@ with st.sidebar:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Vykreslení historie - NYNÍ IGNORUJE SKRYTÉ ZPRÁVY
+# Vykreslení historie - IGNORUJE SKRYTÉ ZPRÁVY
 for msg in st.session_state.messages:
     if msg.get("hidden"):
         continue
@@ -197,7 +201,7 @@ for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
+if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
     # Uložíme uživatelův dotaz (viditelný)
     st.session_state.messages.append({"role": "user", "content": prompt, "hidden": False})
     with st.chat_message("user"):
@@ -205,7 +209,7 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
 
     with st.chat_message("assistant"):
         query_vector = model.encode(prompt).tolist()
-        results = index.query(vector=query_vector, top_k=3, include_metadata=True)
+        results = index.query(vector=query_vector, top_k=5, include_metadata=True)
         
         context_books = ""
         for res in results['matches']:
@@ -215,28 +219,26 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
         system_prompt = f"""
         Jsi MInBot, nekompromisní investiční asistent.
         
-        ZNALOSTI Z KNIH:
+        ZNALOSTI Z KNIH A 10-K REPORTŮ:
         {context_books}
         
         DATA Z TABULEK:
         {portfolio_context}
         
-        --- FÁZE 1: ZÍSKÁNÍ DAT (KRITICKÉ PRAVIDLO) ---
-        Pokud se tě uživatel ptá na analýzu konkrétní akcie (např. INTC, AAPL) a ty v historii ZATÍM NEMÁŠ její aktuální čísla z burzy (dluh, hotovost, P/E),
-        ZAKAZUJI TI PSÁT JAKOUKOLIV ANALÝZU! 
-        Místo toho musíš vypsat POUZE tuto jedinou značku, abych ti data dodal:
-        [[FUNDAMENTY: TICKER]] (například: [[FUNDAMENTY: INTC]])
+        --- FÁZE 1: ZÍSKÁNÍ DAT ---
+        Pokud se tě uživatel ptá na analýzu konkrétní akcie a ty ZATÍM NEMÁŠ její aktuální čísla z burzy (dluh, hotovost, P/E),
+        Místo analýzy MUSÍŠ vypsat POUZE tuto značku: $FETCH: TICKER$ (např. $FETCH: INTC$)
         
-        --- FÁZE 2: TVORBA ANALÝZY (AŽ DOSTANEŠ DATA) ---
-        Když už v chatu vidíš "DATA PŘÍMO Z BURZY", nesmíš použít značku FUNDAMENTY. Místo toho se rozepiš a dodržuj toto:
-        1. MLUV V PRVNÍ OSOBĚ A ZA SEBE. NEPOUŽÍVEJ JMÉNO "GRAHAM".
-        2. Vezmi Celkový dluh a odečti od něj Celkovou hotovost z dodaných dat. Napiš výsledek a zhodnoť zadlužení.
-        3. Pokud P/E chybí (nebo je firma ve ztrátě), jasně to napiš jako investiční riziko.
-        4. Pokud je firma historicky slavná (např. Intel), upozorni na "Hodnotovou past".
-        5. Čistá čeština. Žádné asijské znaky. Měna vždy jako "USD".
+        --- FÁZE 2: TVORBA KOMPLEXNÍ ANALÝZY (AŽ DOSTANEŠ DATA) ---
+        Pokud už máš všechna data, rozepiš se a dodržuj toto:
+        1. MLUV V PRVNÍ OSOBĚ A ZA SEBE. NEPOUŽÍVEJ JMÉNO "GRAHAM", řiď se ale jeho hodnotovým kodexem.
+        2. SYNTÉZA (DŮLEŽITÉ): Dokonale propoj aktuální data z burzy s informacemi, které máš v sekci "ZNALOSTI Z KNIH A 10-K REPORTŮ". Pokud tam vidíš rizika nebo plány managementu, aktivně je zapoj do textu!
+        3. MATEMATIKA: Vezmi Celkový dluh a odečti od něj Celkovou hotovost. Zhodnoť výsledek a zadlužení.
+        4. ZTRÁTA: Pokud P/E chybí, jasně to označ jako zásadní riziko (firma negeneruje zisk).
+        5. HISTORIE: Upozorni na "Hodnotovou past", pokud má firma špatná čísla, ale slavnou minulost.
+        6. JAZYK: Čistá čeština. Měna vždy jako "USD". Žádné asijské znaky.
         """
 
-        # Funkce, která připraví zprávy pro API a zahodí naše interní klíče jako 'hidden'
         def get_api_messages():
             msgs = [{"role": "system", "content": system_prompt}]
             for m in st.session_state.messages:
@@ -251,8 +253,7 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
             )
             raw_answer = response.choices[0].message.content or ""
             
-            # Hledání naší osvědčené značky
-            fund_match = re.search(r"\[\[FUNDAMENTY:\s*([A-Za-z0-9]+)\]\]", raw_answer, re.IGNORECASE)
+            fund_match = re.search(r"\$FETCH:\s*([A-Za-z0-9]+)\$", raw_answer, re.IGNORECASE)
             
             if fund_match:
                 fund_ticker = fund_match.group(1).strip().upper()
@@ -260,21 +261,18 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
                 with st.spinner(f"Stahuji data přímo z burzy pro {fund_ticker}..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
-                    # TRIK: Pošleme stažená data AI jako skrytou zprávu "od uživatele"
-                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna potřebná čísla. Vypracuj na jejich základě tu velmi podrobnou analýzu. Značku [[FUNDAMENTY]] už nevypisuj!"
+                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna potřebná čísla. Vypracuj komplexní analýzu, kde tyto fundamenty propojíš se znalostmi z 10-K reportů a knih z tvé databáze. Značku $FETCH$ už nevypisuj!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
-                    # 2. Volání AI s novými daty
+                    # 2. Volání AI s novými daty a PDF kontextem
                     response_2 = client.chat.completions.create(
                         model="gpt-4o",
                         messages=get_api_messages()
                     )
                     final_answer = response_2.choices[0].message.content or ""
                     
-                    # Očištění o případné zbytky značek
-                    final_answer = re.sub(r"\[\[FUNDAMENTY:\s*([A-Za-z0-9]+)\]\]", "", final_answer, flags=re.IGNORECASE).strip()
+                    final_answer = re.sub(r"\$FETCH:\s*([A-Za-z0-9]+)\$", "", final_answer, flags=re.IGNORECASE).strip()
                     
-                    # Zpracování grafu
                     chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", final_answer, re.IGNORECASE)
                     chart_ticker = None; start_year = None; end_year = None
                     if chart_match:
@@ -296,7 +294,6 @@ if prompt := st.chat_input("Zeptej se mě na akcii z portfolia..."):
                         if stats_context:
                             st.session_state.messages.append({"role": "user", "content": stats_context, "hidden": True})
             else:
-                # Normální odpověď bez stahování
                 clean_answer = raw_answer
                 chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", clean_answer, re.IGNORECASE)
                 chart_ticker = None; start_year = None; end_year = None
