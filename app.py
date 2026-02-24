@@ -215,46 +215,50 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
             if 'text' in res['metadata']:
                 context_books += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
-        system_prompt = f"""
-        Jsi MInBot, nekompromisní a profesionální investiční analytik.
+        # --- MOZEK 1: POUZE PRO STAHOVÁNÍ DAT ---
+        sys_prompt_phase1 = f"""
+        Jsi MInBot, investiční dispečer.
+        ZNALOSTI Z 10-K A KNIH: {context_books}
+        DATA Z TABULEK: {portfolio_context}
         
-        ZNALOSTI Z 10-K REPORTŮ A KNIH:
-        {context_books}
-        
-        DATA Z TABULEK:
-        {portfolio_context}
-        
-        --- FÁZE 1: KONTROLA DAT (ABSOLUTNÍ PRIORITA) ---
-        Podívej se do zadání uživatele a historie. Máš k požadované akcii (např. AAPL) k dispozici text, který začíná "[DATA PŘÍMO Z BURZY PRO...]" s přesnými čísly o dluhu a hotovosti?
-        - POKUD NE: Je ti PŘÍSNĚ ZAKÁZÁNO tvořit jakoukoliv analýzu! ZAKAZUJI ti psát text. Tvá JEDINÁ povolená odpověď je přesně tato značka: [FETCH: TICKER] (například: [FETCH: AAPL]).
-        - POKUD ANO: Přecházíš do Fáze 2.
-
-        --- FÁZE 2: TVORBA ANALÝZY (POUZE POKUD MÁŠ DATA Z BURZY) ---
-        Pokud máš přesná burzovní data, vypracuj špičkovou analýzu. 
-        ZÁKAZ: Nesmíš do textu kopírovat názvy mých pravidel. Použij profesionální nadpisy jako "### Aktuální ocenění a dluh" a "### Vhledy z výroční zprávy 10-K".
-        
-        CO MUSÍŠ UDĚLAT V TEXTU:
-        1. MATEMATIKA: Vem "Celkový dluh", odečti "Celkovou hotovost" a přesný výsledek v USD napiš do textu. Zhodnoť, zda je firma předlužená.
-        2. RIZIKA Z 10-K: Neokecávej to. Vypiš zcela konkrétní rizika, produkty nebo plány, které jsi vyčetl v sekci "ZNALOSTI Z 10-K REPORTŮ".
-        3. Pokud P/E chybí, jasně to označ jako riziko.
-        4. Mluv za sebe v první osobě. Čistá čeština.
+        TVŮJ ÚKOL:
+        Zkontroluj, zda se uživatel ptá na akcii a zda máš v historii přesná data z burzy.
+        POKUD DATA CHYBÍ: Nesmíš psát analýzu! Vygeneruj POUZE A JENOM tuto značku: [FETCH: TICKER] (např. [FETCH: AAPL]).
+        POKUD DATA MÁŠ: Odpověz normálně na dotaz.
         """
 
-        def get_api_messages():
-            msgs = [{"role": "system", "content": system_prompt}]
+        # --- MOZEK 2: ČISTÝ ANALYTIK (ZDE UŽ MÁ DATA) ---
+        sys_prompt_phase2 = f"""
+        Jsi MInBot, nekompromisní a profesionální investiční analytik.
+        ZNALOSTI Z 10-K A KNIH: {context_books}
+        DATA Z TABULEK: {portfolio_context}
+        
+        TVŮJ ÚKOL:
+        Nyní máš v chatu k dispozici všechna data z burzy. Vypracuj špičkovou, tvrdou analýzu.
+        
+        PRAVIDLA:
+        1. ZÁKAZ používat značku [FETCH].
+        2. MATEMATIKA: Vem "Celkový dluh", odečti "Celkovou hotovost" a výsledek v USD jasně napiš do textu.
+        3. RIZIKA Z 10-K: Zakaž si obecné fráze. Z dodaných textů z databáze vytáhni zcela KONKRÉTNÍ rizika (např. konkrétní země, technologie, soudy).
+        4. Pokud P/E chybí, označ to jako tvrdé riziko.
+        5. Použij hezké, profesionální nadpisy jako "### Aktuální finanční zdraví" a "### Vhledy z 10-K reportu". (Nekopíruj názvy mých instrukcí!).
+        6. Mluv v první osobě. Čistá čeština, žádné asijské znaky.
+        """
+
+        def get_api_messages(current_system_prompt):
+            msgs = [{"role": "system", "content": current_system_prompt}]
             for m in st.session_state.messages:
                 msgs.append({"role": m["role"], "content": m["content"]})
             return msgs
 
         try:
-            # 1. Volání AI
+            # 1. Volání AI s Mozkem 1
             response = client.chat.completions.create(
                 model="gpt-4o",
-                messages=get_api_messages()
+                messages=get_api_messages(sys_prompt_phase1)
             )
             raw_answer = response.choices[0].message.content or ""
             
-            # Změněný Regex pro novou bezpečnější značku [FETCH: TICKER]
             fund_match = re.search(r"\[FETCH:\s*([A-Za-z0-9]+)\]", raw_answer, re.IGNORECASE)
             
             if fund_match:
@@ -266,10 +270,10 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                     hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní MÁŠ data z burzy. Vypracuj tu podrobnou analýzu, použij profesionální nadpisy a spočítej ten dluh. Značku [FETCH] už nesmíš použít!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
-                    # 2. Volání AI s novými daty a PDF kontextem
+                    # 2. Volání AI s Mozkem 2 (Tady už se nemůže splést)
                     response_2 = client.chat.completions.create(
                         model="gpt-4o",
-                        messages=get_api_messages()
+                        messages=get_api_messages(sys_prompt_phase2)
                     )
                     final_answer = response_2.choices[0].message.content or ""
                     
