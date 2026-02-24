@@ -208,7 +208,6 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
 
     with st.chat_message("assistant"):
         query_vector = model.encode(prompt).tolist()
-        # Zvýšení počtu extrahovaných segmentů na 8 pro hlubší vhled z 10-K
         results = index.query(vector=query_vector, top_k=8, include_metadata=True)
         
         context_books = ""
@@ -217,7 +216,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                 context_books += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
         system_prompt = f"""
-        Jsi MInBot, nekompromisní, tvrdý investiční analytik. Nesnášíš "omáčku" a obecné fráze.
+        Jsi MInBot, nekompromisní a profesionální investiční analytik.
         
         ZNALOSTI Z 10-K REPORTŮ A KNIH:
         {context_books}
@@ -225,18 +224,20 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         DATA Z TABULEK:
         {portfolio_context}
         
-        --- ABSOLUTNÍ PRAVIDLO PRO FÁZI 1 (ZÍSKÁNÍ DAT) ---
-        Pokud se tě uživatel ptá na akcii (např. AAPL) a ty ZATÍM NEMÁŠ v této konverzaci zobrazená aktuální, přesná čísla o dluhu a hotovosti přímo z burzy:
-        JE TI PŘÍSNĚ ZAKÁZÁNO PSÁT JAKÝKOLIV TEXT NEBO ANALÝZU! ZAKAZUJI TI TVOŘIT ODPOVĚĎ!
-        Musíš POUZE a JENOM vypsat tuto značku, abychom data stáhli:
-        $FETCH: TICKER$ (např. $FETCH: AAPL$)
+        --- FÁZE 1: KONTROLA DAT (ABSOLUTNÍ PRIORITA) ---
+        Podívej se do zadání uživatele a historie. Máš k požadované akcii (např. AAPL) k dispozici text, který začíná "[DATA PŘÍMO Z BURZY PRO...]" s přesnými čísly o dluhu a hotovosti?
+        - POKUD NE: Je ti PŘÍSNĚ ZAKÁZÁNO tvořit jakoukoliv analýzu! ZAKAZUJI ti psát text. Tvá JEDINÁ povolená odpověď je přesně tato značka: [FETCH: TICKER] (například: [FETCH: AAPL]).
+        - POKUD ANO: Přecházíš do Fáze 2.
+
+        --- FÁZE 2: TVORBA ANALÝZY (POUZE POKUD MÁŠ DATA Z BURZY) ---
+        Pokud máš přesná burzovní data, vypracuj špičkovou analýzu. 
+        ZÁKAZ: Nesmíš do textu kopírovat názvy mých pravidel. Použij profesionální nadpisy jako "### Aktuální ocenění a dluh" a "### Vhledy z výroční zprávy 10-K".
         
-        --- PRAVIDLA PRO FÁZI 2 (KDYŽ MÁŠ PŘESNÁ DATA Z BURZY) ---
-        Pokud vidíš zprávu "Zde jsou data z burzy...", vypracuj tvrdou analýzu:
-        1. PŘESNÁ MATEMATIKA (POVINNÉ): Vezmi přesné číslo pro "Celkový dluh" a odečti "Celkovou hotovost". Napiš přesný výsledek v USD. Zhodnoť, zda je firma předlužená.
-        2. KONKRÉTNÍ 10-K RIZIKA (POVINNÉ): Zakaž si obecné fráze (jako "geopolitická nestabilita"). Přečti si dodané "ZNALOSTI Z 10-K REPORTŮ" a vypiš KONKRÉTNÍ zmíněné detaily, konkrétní produkty nebo situace, které tam firma řeší. Pokud budeš příliš obecný, selhal jsi.
-        3. MLUV V PRVNÍ OSOBĚ A ZA SEBE. NEPOUŽÍVEJ JMÉNO "GRAHAM".
-        4. Čistá čeština, žádné asijské znaky.
+        CO MUSÍŠ UDĚLAT V TEXTU:
+        1. MATEMATIKA: Vem "Celkový dluh", odečti "Celkovou hotovost" a přesný výsledek v USD napiš do textu. Zhodnoť, zda je firma předlužená.
+        2. RIZIKA Z 10-K: Neokecávej to. Vypiš zcela konkrétní rizika, produkty nebo plány, které jsi vyčetl v sekci "ZNALOSTI Z 10-K REPORTŮ".
+        3. Pokud P/E chybí, jasně to označ jako riziko.
+        4. Mluv za sebe v první osobě. Čistá čeština.
         """
 
         def get_api_messages():
@@ -253,7 +254,8 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
             )
             raw_answer = response.choices[0].message.content or ""
             
-            fund_match = re.search(r"\$FETCH:\s*([A-Za-z0-9]+)\$", raw_answer, re.IGNORECASE)
+            # Změněný Regex pro novou bezpečnější značku [FETCH: TICKER]
+            fund_match = re.search(r"\[FETCH:\s*([A-Za-z0-9]+)\]", raw_answer, re.IGNORECASE)
             
             if fund_match:
                 fund_ticker = fund_match.group(1).strip().upper()
@@ -261,7 +263,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                 with st.spinner(f"Stahuji data přímo z burzy pro {fund_ticker}..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
-                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna potřebná čísla. Udělej matematiku dluhu. A hlavně: vytáhni z 10-K naprosto konkrétní detaily a ukaž, že nejsi líný. Značku $FETCH$ už nevypisuj!"
+                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní MÁŠ data z burzy. Vypracuj tu podrobnou analýzu, použij profesionální nadpisy a spočítej ten dluh. Značku [FETCH] už nesmíš použít!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
                     # 2. Volání AI s novými daty a PDF kontextem
@@ -271,7 +273,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                     )
                     final_answer = response_2.choices[0].message.content or ""
                     
-                    final_answer = re.sub(r"\$FETCH:\s*([A-Za-z0-9]+)\$", "", final_answer, flags=re.IGNORECASE).strip()
+                    final_answer = re.sub(r"\[FETCH:\s*([A-Za-z0-9]+)\]", "", final_answer, flags=re.IGNORECASE).strip()
                     
                     chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", final_answer, re.IGNORECASE)
                     chart_ticker = None; start_year = None; end_year = None
