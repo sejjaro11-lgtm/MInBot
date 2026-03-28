@@ -123,32 +123,64 @@ def get_graham_fundamentals(ticker_symbol):
         stock = yf.Ticker(ticker_symbol)
         info = stock.info
         
-        pe = info.get('trailingPE', None)
-        if pe is None:
-            pe_text = "Chybí (Firma vykazuje čistou ztrátu a záporný zisk na akcii)"
-        else:
-            pe_text = str(pe)
+        # Ochranná funkce proti halucinacím
+        def safe_get(key, default="HODNOTA_NEEXISTUJE"):
+            val = info.get(key)
+            return val if val is not None and val != "" else default
 
-        pb = info.get('priceToBook', 'Chybí')
-        debt = info.get('totalDebt', 0)
-        cash = info.get('totalCash', 0)
-        
+        # Formátování peněz s ochranou
         def format_money(val):
-            if val == 'Chybí' or val is None: return 'Chybí'
-            if val >= 1e9: return f"{val/1e9:.2f} mld. USD"
-            if val >= 1e6: return f"{val/1e6:.2f} mil. USD"
-            return f"{val:,.2f} USD"
+            if val == "HODNOTA_NEEXISTUJE" or val == 'Chybí' or val is None: 
+                return "HODNOTA_NEEXISTUJE"
+            try:
+                val_float = float(val)
+                if val_float >= 1e9: return f"{val_float/1e9:.2f} mld. USD"
+                if val_float >= 1e6: return f"{val_float/1e6:.2f} mil. USD"
+                return f"{val_float:,.2f} USD"
+            except (ValueError, TypeError):
+                return "HODNOTA_NEEXISTUJE"
+
+        # 1. Základní ocenění
+        pe = safe_get('trailingPE')
+        pe_text = str(pe) if pe != "HODNOTA_NEEXISTUJE" else "HODNOTA_NEEXISTUJE (Firma pravděpodobně nevykazuje čistý zisk)"
+        pb = safe_get('priceToBook')
+        
+        # 2. Rozvaha (Zadlužení a likvidita)
+        debt = safe_get('totalDebt')
+        cash = safe_get('totalCash')
+        current_ratio = safe_get('currentRatio')
+        
+        # 3. Výsledovka a Cash Flow
+        revenue = safe_get('totalRevenue')
+        fcf = safe_get('freeCashflow')
+        
+        profit_margins = safe_get('profitMargins')
+        if profit_margins != "HODNOTA_NEEXISTUJE":
+            try:
+                profit_margins = f"{float(profit_margins) * 100:.2f} %"
+            except:
+                profit_margins = "HODNOTA_NEEXISTUJE"
 
         summary = f"""
         [DATA PŘÍMO Z BURZY PRO {ticker_symbol}]
+        
+        ZÁKLADNÍ OCENĚNÍ:
         P/E: {pe_text}
         P/B: {pb}
+        
+        ROZVAHA (Zadlužení a likvidita):
         Celková hotovost na účtech: {format_money(cash)}
         Celkový dluh: {format_money(debt)}
+        Current Ratio (Běžná likvidita): {current_ratio}
+        
+        VÝSLEDOVKA A CASH FLOW:
+        Celkové tržby: {format_money(revenue)}
+        Zisková marže: {profit_margins}
+        Volné cash flow (FCF): {format_money(fcf)}
         """
         return summary
     except Exception as e:
-        return f"[CHYBA] Nepodařilo se stáhnout fundamenty pro {ticker_symbol}."
+        return f"[CHYBA] Nepodařilo se stáhnout fundamenty pro {ticker_symbol}. Důvod: {str(e)}"
 
 # --- 5. FUNKCE PRO UČENÍ (PDF) ---
 def index_documents():
