@@ -17,7 +17,7 @@ st.title("📈 MInBot - Investiční Rádce")
 try:
     PINECONE_KEY = st.secrets["PINECONE_API_KEY"]
     OPENAI_KEY = st.secrets["OPENAI_API_KEY"]
-    FMP_KEY = st.secrets["FMP_API_KEY"] # Nový klíč pro profesionální data
+    FMP_KEY = st.secrets["FMP_API_KEY"]
     pc = Pinecone(api_key=PINECONE_KEY)
     client = openai.OpenAI(api_key=OPENAI_KEY)
     index_name = "minbot-index"
@@ -119,7 +119,7 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
         
     return stats_summary
 
-# --- 4.5 FUNKCE PRO FUNDAMENTÁLNÍ DATA ---
+# --- 4.5 FUNKCE PRO FUNDAMENTÁLNÍ DATA & GRAHAMOVO SKÓRE ---
 def get_graham_fundamentals(ticker_symbol):
     ticker = ticker_symbol.upper()
     try:
@@ -133,30 +133,37 @@ def get_graham_fundamentals(ticker_symbol):
         except Exception:
             pass 
 
-        # 2. Vždy si připravíme záchrannou síť v podobě yfinance
+        # 2. Záložní síť yfinance
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
         except:
             info = {}
 
-        # 3. Chytře vybereme tu nejlepší možnou hodnotu (FMP má přednost)
+        # Detekce správné měny (USD, KRW, EUR atd.)
+        currency = info.get('financialCurrency', info.get('currency', 'USD'))
+        if not currency: currency = "USD"
+        currency = currency.upper()
+
+        # 3. Výběr nejlepší hodnoty
         def get_best_val(fmp_key, yf_key):
             val_fmp = fmp_data.get(fmp_key)
-            if val_fmp is not None and val_fmp != "":
-                return val_fmp
+            if val_fmp is not None and val_fmp != "": return val_fmp
             val_yf = info.get(yf_key)
-            if val_yf is not None and val_yf != "":
-                return val_yf
+            if val_yf is not None and val_yf != "": return val_yf
             return "HODNOTA_NEEXISTUJE"
 
+        # Opravený formátovač (zvládá záporná čísla a správnou měnu)
         def format_money(val):
             if val == "HODNOTA_NEEXISTUJE" or val is None: return "HODNOTA_NEEXISTUJE"
             try:
                 val_float = float(val)
-                if val_float >= 1e9: return f"{val_float/1e9:.2f} mld. USD"
-                if val_float >= 1e6: return f"{val_float/1e6:.2f} mil. USD"
-                return f"{val_float:,.2f} USD"
+                abs_val = abs(val_float)
+                sign = "-" if val_float < 0 else ""
+                
+                if abs_val >= 1e9: return f"{sign}{abs_val/1e9:.2f} mld. {currency}"
+                if abs_val >= 1e6: return f"{sign}{abs_val/1e6:.2f} mil. {currency}"
+                return f"{sign}{abs_val:,.2f} {currency}"
             except: return "HODNOTA_NEEXISTUJE"
 
         # Sběr dat
@@ -168,16 +175,74 @@ def get_graham_fundamentals(ticker_symbol):
         fcf = get_best_val('freeCashFlowYieldTTM', 'freeCashflow')
         
         revenue = info.get('totalRevenue')
-        if revenue is None or revenue == "":
-            revenue = "HODNOTA_NEEXISTUJE"
+        if revenue is None or revenue == "": revenue = "HODNOTA_NEEXISTUJE"
 
-        # Grahamova matematika likvidity (čistý dluh)
+        # Matematika čistého dluhu
         margin_safety = "HODNOTA_NEEXISTUJE"
+        net_debt_val = None
         if debt != "HODNOTA_NEEXISTUJE" and cash != "HODNOTA_NEEXISTUJE":
             try:
-                net_debt = float(debt) - float(cash)
-                margin_safety = format_money(net_debt)
+                net_debt_val = float(debt) - float(cash)
+                margin_safety = format_money(net_debt_val)
             except: pass
+
+        # ==========================================
+        # GRAHAMŮV SKÓROVACÍ SYSTÉM (Matematika v Pythonu)
+        # ==========================================
+        graham_score = 0
+        graham_eval = []
+
+        # 1. P/E < 15
+        pe_float = None
+        try:
+            pe_float = float(pe)
+            if 0 < pe_float <= 15:
+                graham_score += 1
+                graham_eval.append("✅ P/E je pod 15 (Defenzivní ocenění)")
+            else:
+                graham_eval.append("❌ P/E je nad 15 nebo nelze určit (Dražší akcie)")
+        except: graham_eval.append("❌ P/E chybí (Firma je ve ztrátě nebo data nejsou)")
+
+        # 2. P/B < 1.5
+        pb_float = None
+        try:
+            pb_float = float(pb)
+            if 0 < pb_float <= 1.5:
+                graham_score += 1
+                graham_eval.append("✅ P/B je pod 1.5 (Dobré ocenění čistého majetku)")
+            else:
+                graham_eval.append("❌ P/B je nad 1.5 (Trh si za majetek firmy žádá prémii)")
+        except: graham_eval.append("❌ P/B chybí")
+
+        # 3. P/E * P/B < 22.5
+        try:
+            if pe_float and pb_float and (pe_float * pb_float) <= 22.5 and pe_float > 0:
+                graham_score += 1
+                graham_eval.append("✅ Splňuje Grahamovo složené číslo (P/E * P/B <= 22.5)")
+            else:
+                graham_eval.append("❌ Nesplňuje Grahamovo složené číslo (Ocenění je příliš vysoké)")
+        except: graham_eval.append("❌ Nelze spočítat Grahamovo složené číslo")
+
+        # 4. Current Ratio >= 2.0
+        try:
+            cr_float = float(current_ratio)
+            if cr_float >= 2.0:
+                graham_score += 1
+                graham_eval.append("✅ Běžná likvidita >= 2.0 (Silná krátkodobá schopnost splácet)")
+            else:
+                graham_eval.append("❌ Běžná likvidita < 2.0 (Slabší krátkodobé zdraví)")
+        except: graham_eval.append("❌ Běžná likvidita chybí")
+
+        # 5. Hotovost > Dluh (Záporný čistý dluh)
+        if net_debt_val is not None:
+            if net_debt_val < 0:
+                graham_score += 1
+                graham_eval.append("✅ Více hotovosti než dluhu (Excelentní finanční stabilita a polštář)")
+            else:
+                graham_eval.append("❌ Celkový dluh převyšuje hotovost (Běžné, ale ne ideální)")
+        else: graham_eval.append("❌ Nelze porovnat dluh a hotovost")
+
+        graham_text = "\n".join(graham_eval)
 
         summary = f"""
         [DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ PRO {ticker}]
@@ -190,12 +255,17 @@ def get_graham_fundamentals(ticker_symbol):
         Hotovost: {format_money(cash)}
         Celkový dluh: {format_money(debt)}
         Čistý dluh (Dluh - Hotovost): {margin_safety}
-        Current Ratio: {current_ratio} (Graham vyžaduje > 2.0)
+        Current Ratio: {current_ratio}
         
         VÝKONNOST A CASH FLOW:
         Celkové tržby: {format_money(revenue)}
         Volné cash flow: {format_money(fcf)}
         Zisková marže: {info.get('profitMargins', 'HODNOTA_NEEXISTUJE')}
+        
+        =================================================
+        TVRDÉ FAKTA - GRAHAMOVO SKÓRE: {graham_score} / 5
+        =================================================
+        {graham_text}
         """
         return summary
     except Exception as e:
@@ -236,7 +306,6 @@ with st.sidebar:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Vykreslení historie - IGNORUJE SKRYTÉ ZPRÁVY
 for msg in st.session_state.messages:
     if msg.get("hidden"):
         continue
@@ -266,20 +335,20 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                 context_books += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
 
         # =======================================================
-        # MOZEK 1: DISPEČER (Slouží pouze ke stažení dat z burzy)
+        # MOZEK 1: DISPEČER
         # =======================================================
         system_prompt_router = f"""
         Jsi MInBot, investiční asistent.
         
         ÚKOL:
-        Uživatel žádá o analýzu akcie (např. AAPL, META). Ty v tuto chvíli NEMÁŠ žádná aktuální čísla.
+        Uživatel žádá o analýzu akcie. Ty v tuto chvíli NEMÁŠ žádná aktuální čísla.
         NESMÍŠ psát žádný text, nesmíš psát analýzu. 
         Tvá JEDINÁ povolená odpověď je tato speciální značka: [FETCH: TICKER] (například [FETCH: AAPL] nebo [FETCH: 005930.KS]).
         Vypiš ji a nic jiného.
         """
 
         # =======================================================
-        # MOZEK 2: ČISTÝ ANALYTIK (Nezná značku FETCH a tvoří finální text)
+        # MOZEK 2: ČISTÝ ANALYTIK 
         # =======================================================
         system_prompt_analyst = f"""
         Jsi MInBot, nekompromisní a přesný investiční analytik.
@@ -291,14 +360,14 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         {portfolio_context}
         
         TVŮJ ÚKOL:
-        Právě jsi obdržel od uživatele "DATA PŘÍMO Z BURZY". Vypracuj na jejich základě špičkovou analýzu.
+        Právě jsi obdržel od uživatele "DATA PŘÍMO Z BURZY", která nově obsahují i vypočítané GRAHAMOVO SKÓRE. Vypracuj na jejich základě špičkovou analýzu.
         
         TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA PRO TEXT:
-        1. ZPRACOVÁNÍ DAT: Získaná čísla (Tržby, Marže, FCF, P/E, P/B, Dluh, Hotovost) MUSÍŠ zakomponovat do textu.
-        2. CHYBĚJÍCÍ DATA (ANTI-HALUCINACE): Pokud u jakékoliv hodnoty vidíš napsáno "HODNOTA_NEEXISTUJE", je absolutně ZAKÁZÁNO vymýšlet si výmluvy o "limitech při stahování" nebo chybách. Nesmíš se omlouvat. Jednoduše suše konstatuj: "Tento údaj není u společnosti momentálně veřejně dostupný" a daný výpočet s ním přeskoč.
-        3. MATEMATIKA ZADLUŽENÍ: Pokud máš k dispozici obě čísla pro hotovost a dluh, odečti hotovost od dluhu. Výsledek matematicky vyčísli v USD a zhodnoť zadlužení.
-        4. RIZIKA Z 10-K: Zakaž si obecné fráze. Z dodaných textů 10-K vytáhni velmi specifické detaily (konkrétní produkty, soudy, plány).
-        5. FORMA: Použij profesionální nadpisy jako "### Základní ocenění a tržby", "### Rozvaha a hotovost" a "### Vhledy z výroční zprávy 10-K".
+        1. POVINNÁ ČÍSLA: Přesná čísla (Tržby, Marže, FCF, Dluh, Hotovost) DOSLOVA VYPIŠ do textu ve správné měně (přesně tak, jak ji vidíš v datech, např. USD, KRW, EUR).
+        2. GRAHAMOVO SKÓRE: V dodaných datech máš část "TVRDÉ FAKTA - GRAHAMOVO SKÓRE". Zahrň tento výsledek X/5 do své analýzy pod samostatný nadpis. Jasně a srozumitelně shrň uživateli, v kterých bodech firma podle Grahama uspěla a ve kterých selhala.
+        3. CHYBĚJÍCÍ DATA: U "HODNOTA_NEEXISTUJE" se nesmíš omlouvat za limity. Napiš "Tento údaj není u společnosti veřejně dostupný".
+        4. RIZIKA Z 10-K: Z dodaných textů z Pinecone (ZNALOSTI Z 10-K) vytáhni zcela konkrétní detaily.
+        5. FORMA: Použij nadpisy jako "### Základní ocenění a tržby", "### Hodnocení podle Benjamina Grahama" a "### Vhledy z výroční zprávy 10-K".
         6. Mluv za sebe v první osobě. Čistá čeština.
         """
 
@@ -316,7 +385,6 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
             )
             raw_answer = response.choices[0].message.content or ""
             
-            # OPRAVA REGEXU: Nyní zachytí i tečky a pomlčky v mezinárodních tickerech
             fund_match = re.search(r"\[FETCH:\s*([A-Za-z0-9\.\-]+)\]", raw_answer, re.IGNORECASE)
             
             if fund_match:
@@ -325,7 +393,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                 with st.spinner(f"Stahuji data přímo z burzy pro {fund_ticker}..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
-                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna čísla. Vypracuj podrobnou analýzu podle pravidel. Výslovně opiš do textu ty částky a odečti je od sebe!"
+                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna čísla včetně Grahamova skóre a správné měny. Vypracuj podrobnou analýzu podle pravidel. Výslovně opiš do textu ty částky a pečlivě rozeber to Grahamovo hodnocení!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
                     # 2. Zavoláme Mozek 2 (Analytika)
