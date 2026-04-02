@@ -16,6 +16,7 @@ st.title("📈 MInBot - Investiční Rádce")
 try:
     PINECONE_KEY = st.secrets["PINECONE_API_KEY"]
     OPENAI_KEY = st.secrets["OPENAI_API_KEY"]
+    FMP_KEY = st.secrets["FMP_API_KEY"] # Nový klíč pro profesionální data
     pc = Pinecone(api_key=PINECONE_KEY)
     client = openai.OpenAI(api_key=OPENAI_KEY)
     index_name = "minbot-index"
@@ -118,69 +119,71 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
     return stats_summary
 
 # --- 4.5 FUNKCE PRO FUNDAMENTÁLNÍ DATA ---
-def get_graham_fundamentals(ticker_symbol):
-    try:
-        stock = yf.Ticker(ticker_symbol)
-        info = stock.info
-        
-        # Ochranná funkce proti halucinacím
-        def safe_get(key, default="HODNOTA_NEEXISTUJE"):
-            val = info.get(key)
-            return val if val is not None and val != "" else default
+import requests
 
-        # Formátování peněz s ochranou
+def get_graham_fundamentals(ticker_symbol):
+    ticker = ticker_symbol.upper()
+    try:
+        # PRIMÁRNÍ ZDROJ: Financial Modeling Prep (Oficiální SEC data)
+        fmp_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{ticker}?apikey={FMP_KEY}"
+        fmp_resp = requests.get(fmp_url).json()
+        
+        # ZÁLOŽNÍ ZDROJ: yfinance
+        stock = yf.Ticker(ticker)
+        info = stock.info
+
+        def safe_get_fmp(key):
+            if fmp_resp and len(fmp_resp) > 0:
+                return fmp_resp[0].get(key, "HODNOTA_NEEXISTUJE")
+            return "HODNOTA_NEEXISTUJE"
+
         def format_money(val):
-            if val == "HODNOTA_NEEXISTUJE" or val == 'Chybí' or val is None: 
-                return "HODNOTA_NEEXISTUJE"
+            if val == "HODNOTA_NEEXISTUJE" or val is None: return "HODNOTA_NEEXISTUJE"
             try:
                 val_float = float(val)
                 if val_float >= 1e9: return f"{val_float/1e9:.2f} mld. USD"
                 if val_float >= 1e6: return f"{val_float/1e6:.2f} mil. USD"
                 return f"{val_float:,.2f} USD"
-            except (ValueError, TypeError):
-                return "HODNOTA_NEEXISTUJE"
+            except: return "HODNOTA_NEEXISTUJE"
 
-        # 1. Základní ocenění
-        pe = safe_get('trailingPE')
-        pe_text = str(pe) if pe != "HODNOTA_NEEXISTUJE" else "HODNOTA_NEEXISTUJE (Firma pravděpodobně nevykazuje čistý zisk)"
-        pb = safe_get('priceToBook')
+        # Sběr dat (Kombinace FMP a yfinance pro maximální přesnost)
+        pe = info.get('trailingPE', safe_get_fmp('peRatioTTM'))
+        pb = info.get('priceToBook', safe_get_fmp('priceToBookValueRatioTTM'))
+        debt = info.get('totalDebt', safe_get_fmp('totalDebtTTM'))
+        cash = info.get('totalCash', safe_get_fmp('cashAndCashEquivalentsTTM'))
+        current_ratio = info.get('currentRatio', safe_get_fmp('currentRatioTTM'))
+        revenue = info.get('totalRevenue', safe_get_fmp('revenuePerShareTTM')) # FMP dává často per share v TTM
+        fcf = info.get('freeCashflow', safe_get_fmp('freeCashFlowYieldTTM'))
         
-        # 2. Rozvaha (Zadlužení a likvidita)
-        debt = safe_get('totalDebt')
-        cash = safe_get('totalCash')
-        current_ratio = safe_get('currentRatio')
-        
-        # 3. Výsledovka a Cash Flow
-        revenue = safe_get('totalRevenue')
-        fcf = safe_get('freeCashflow')
-        
-        profit_margins = safe_get('profitMargins')
-        if profit_margins != "HODNOTA_NEEXISTUJE":
+        # Grahamova matematika likvidity
+        margin_safety = "HODNOTA_NEEXISTUJE"
+        if debt != "HODNOTA_NEEXISTUJE" and cash != "HODNOTA_NEEXISTUJE":
             try:
-                profit_margins = f"{float(profit_margins) * 100:.2f} %"
-            except:
-                profit_margins = "HODNOTA_NEEXISTUJE"
+                net_debt = float(debt) - float(cash)
+                margin_safety = format_money(net_debt)
+            except: pass
 
         summary = f"""
-        [DATA PŘÍMO Z BURZY PRO {ticker_symbol}]
+        [DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ PRO {ticker}]
         
         ZÁKLADNÍ OCENĚNÍ:
-        P/E: {pe_text}
-        P/B: {pb}
+        P/E Ratio: {pe if pe != "HODNOTA_NEEXISTUJE" else "Není k dispozici (ztráta?)"}
+        P/B Ratio: {pb}
         
-        ROZVAHA (Zadlužení a likvidita):
-        Celková hotovost na účtech: {format_money(cash)}
+        FINANČNÍ SÍLA (ROZVAHA):
+        Hotovost: {format_money(cash)}
         Celkový dluh: {format_money(debt)}
-        Current Ratio (Běžná likvidita): {current_ratio}
+        Čistý dluh (Dluh - Hotovost): {margin_safety}
+        Current Ratio: {current_ratio} (Graham vyžaduje > 2.0)
         
-        VÝSLEDOVKA A CASH FLOW:
+        VÝKONNOST A CASH FLOW:
         Celkové tržby: {format_money(revenue)}
-        Zisková marže: {profit_margins}
-        Volné cash flow (FCF): {format_money(fcf)}
+        Volné cash flow: {format_money(fcf)}
+        Zisková marže: {info.get('profitMargins', 'HODNOTA_NEEXISTUJE')}
         """
         return summary
     except Exception as e:
-        return f"[CHYBA] Nepodařilo se stáhnout fundamenty pro {ticker_symbol}."
+        return f"[CHYBA] Kritické selhání při stahování dat pro {ticker}: {str(e)}"
 
 # --- 5. FUNKCE PRO UČENÍ (PDF) ---
 def index_documents():
