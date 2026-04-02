@@ -180,7 +180,7 @@ def get_graham_fundamentals(ticker_symbol):
         """
         return summary
     except Exception as e:
-        return f"[CHYBA] Nepodařilo se stáhnout fundamenty pro {ticker_symbol}. Důvod: {str(e)}"
+        return f"[CHYBA] Nepodařilo se stáhnout fundamenty pro {ticker_symbol}."
 
 # --- 5. FUNKCE PRO UČENÍ (PDF) ---
 def index_documents():
@@ -253,7 +253,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         Jsi MInBot, investiční asistent.
         
         ÚKOL:
-        Uživatel žádá o analýzu akcie (např. AAPL). Ty v tuto chvíli NEMÁŠ žádná aktuální čísla.
+        Uživatel žádá o analýzu akcie (např. AAPL, META). Ty v tuto chvíli NEMÁŠ žádná aktuální čísla.
         NESMÍŠ psát žádný text, nesmíš psát analýzu. 
         Tvá JEDINÁ povolená odpověď je tato speciální značka: [FETCH: TICKER] (například [FETCH: AAPL]).
         Vypiš ji a nic jiného.
@@ -272,14 +272,14 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         {portfolio_context}
         
         TVŮJ ÚKOL:
-        Právě jsi obdržel od uživatele "DATA PŘÍMO Z BURZY". Teprve teď můžeš psát. Vypracuj na jejich základě špičkovou, tvrdou analýzu.
+        Právě jsi obdržel od uživatele "DATA PŘÍMO Z BURZY". Vypracuj na jejich základě špičkovou analýzu.
         
         TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA PRO TEXT:
-        1. POVINNÁ ČÍSLA: Je ABSOLUTNĚ ZAKÁZÁNO mluvit o dluhu a hotovosti jen obecně. MUSÍŠ do textu DOSLOVA VYPSAT přesná čísla, která jsi dostal z burzy. Příklad: "Společnost má hotovost ve výši XY miliard USD a celkový dluh YZ miliard USD."
-        2. MATEMATIKA: Jakmile vypíšeš přesná čísla, odečti hotovost od dluhu. Výsledek matematicky vyčísli v USD a zhodnoť zadlužení.
-        3. P/E: Vždy napiš přesnou hodnotu P/E. Pokud P/E chybí, označ to jako tvrdé riziko.
+        1. ZPRACOVÁNÍ DAT: Získaná čísla (Tržby, Marže, FCF, P/E, P/B, Dluh, Hotovost) MUSÍŠ zakomponovat do textu.
+        2. CHYBĚJÍCÍ DATA (ANTI-HALUCINACE): Pokud u jakékoliv hodnoty vidíš napsáno "HODNOTA_NEEXISTUJE", je absolutně ZAKÁZÁNO vymýšlet si výmluvy o "limitech při stahování" nebo chybách. Nesmíš se omlouvat. Jednoduše suše konstatuj: "Tento údaj není u společnosti momentálně veřejně dostupný" a daný výpočet s ním přeskoč.
+        3. MATEMATIKA ZADLUŽENÍ: Pokud máš k dispozici obě čísla pro hotovost a dluh, odečti hotovost od dluhu. Výsledek matematicky vyčísli v USD a zhodnoť zadlužení.
         4. RIZIKA Z 10-K: Zakaž si obecné fráze. Z dodaných textů 10-K vytáhni velmi specifické detaily (konkrétní produkty, soudy, plány).
-        5. FORMA: Použij profesionální nadpisy jako "### Aktuální ocenění a dluh" a "### Vhledy z výroční zprávy 10-K".
+        5. FORMA: Použij profesionální nadpisy jako "### Základní ocenění a tržby", "### Rozvaha a hotovost" a "### Vhledy z výroční zprávy 10-K".
         6. Mluv za sebe v první osobě. Čistá čeština.
         """
 
@@ -309,7 +309,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                     hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna čísla. Vypracuj podrobnou analýzu podle pravidel. Výslovně opiš do textu ty částky v USD a odečti je od sebe!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
-                    # 2. Zavoláme Mozek 2 (Analytika) - Tento mozek netuší nic o značce FETCH
+                    # 2. Zavoláme Mozek 2 (Analytika)
                     response_2 = client.chat.completions.create(
                         model="gpt-4o",
                         messages=get_api_messages(system_prompt_analyst)
