@@ -7,7 +7,7 @@ import os
 from pypdf import PdfReader
 import yfinance as yf
 import re
-import requests  # Přidáno bezpečně rovnou nahoru
+import requests
 
 # --- 1. ZÁKLADNÍ NASTAVENÍ ---
 st.set_page_config(page_title="MInBot - Investiční Rádce", page_icon="📈", layout="wide")
@@ -128,11 +128,10 @@ def get_graham_fundamentals(ticker_symbol):
         try:
             fmp_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{ticker}?apikey={FMP_KEY}"
             fmp_resp = requests.get(fmp_url).json()
-            # Ujistíme se, že odpověď je seznam a není prázdná
             if isinstance(fmp_resp, list) and len(fmp_resp) > 0:
                 fmp_data = fmp_resp[0]
         except Exception:
-            pass # Pokud API selže (špatný klíč, limit), jdeme dál bez pádu kódu
+            pass 
 
         # 2. Vždy si připravíme záchrannou síť v podobě yfinance
         try:
@@ -168,7 +167,6 @@ def get_graham_fundamentals(ticker_symbol):
         current_ratio = get_best_val('currentRatioTTM', 'currentRatio')
         fcf = get_best_val('freeCashFlowYieldTTM', 'freeCashflow')
         
-        # U celkových tržeb (Revenue) upřednostníme Yahoo, protože FMP zdarma dává jen hodnotu na akcii
         revenue = info.get('totalRevenue')
         if revenue is None or revenue == "":
             revenue = "HODNOTA_NEEXISTUJE"
@@ -276,7 +274,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         ÚKOL:
         Uživatel žádá o analýzu akcie (např. AAPL, META). Ty v tuto chvíli NEMÁŠ žádná aktuální čísla.
         NESMÍŠ psát žádný text, nesmíš psát analýzu. 
-        Tvá JEDINÁ povolená odpověď je tato speciální značka: [FETCH: TICKER] (například [FETCH: AAPL]).
+        Tvá JEDINÁ povolená odpověď je tato speciální značka: [FETCH: TICKER] (například [FETCH: AAPL] nebo [FETCH: 005930.KS]).
         Vypiš ji a nic jiného.
         """
 
@@ -318,7 +316,8 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
             )
             raw_answer = response.choices[0].message.content or ""
             
-            fund_match = re.search(r"\[FETCH:\s*([A-Za-z0-9]+)\]", raw_answer, re.IGNORECASE)
+            # OPRAVA REGEXU: Nyní zachytí i tečky a pomlčky v mezinárodních tickerech
+            fund_match = re.search(r"\[FETCH:\s*([A-Za-z0-9\.\-]+)\]", raw_answer, re.IGNORECASE)
             
             if fund_match:
                 fund_ticker = fund_match.group(1).strip().upper()
@@ -326,8 +325,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                 with st.spinner(f"Stahuji data přímo z burzy pro {fund_ticker}..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
-                    # Tajně podstrčíme data do chatu
-                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna čísla. Vypracuj podrobnou analýzu podle pravidel. Výslovně opiš do textu ty částky v USD a odečti je od sebe!"
+                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna čísla. Vypracuj podrobnou analýzu podle pravidel. Výslovně opiš do textu ty částky a odečti je od sebe!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
                     # 2. Zavoláme Mozek 2 (Analytika)
@@ -337,7 +335,6 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                     )
                     final_answer = response_2.choices[0].message.content or ""
                     
-                    # Pro jistotu ošetření grafů
                     chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", final_answer, re.IGNORECASE)
                     chart_ticker = None; start_year = None; end_year = None
                     if chart_match:
@@ -359,7 +356,6 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                         if stats_context:
                             st.session_state.messages.append({"role": "user", "content": stats_context, "hidden": True})
             else:
-                # Pokud dispečer usoudil, že nejde o dotaz na akcii (např. běžná konverzace)
                 clean_answer = raw_answer
                 chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", clean_answer, re.IGNORECASE)
                 chart_ticker = None; start_year = None; end_year = None
