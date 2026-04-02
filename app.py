@@ -7,6 +7,7 @@ import os
 from pypdf import PdfReader
 import yfinance as yf
 import re
+import requests  # Přidáno bezpečně rovnou nahoru
 
 # --- 1. ZÁKLADNÍ NASTAVENÍ ---
 st.set_page_config(page_title="MInBot - Investiční Rádce", page_icon="📈", layout="wide")
@@ -119,22 +120,35 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
     return stats_summary
 
 # --- 4.5 FUNKCE PRO FUNDAMENTÁLNÍ DATA ---
-import requests
-
 def get_graham_fundamentals(ticker_symbol):
     ticker = ticker_symbol.upper()
     try:
-        # PRIMÁRNÍ ZDROJ: Financial Modeling Prep (Oficiální SEC data)
-        fmp_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{ticker}?apikey={FMP_KEY}"
-        fmp_resp = requests.get(fmp_url).json()
-        
-        # ZÁLOŽNÍ ZDROJ: yfinance
-        stock = yf.Ticker(ticker)
-        info = stock.info
+        # 1. Zkusíme FMP, ale bezpečně
+        fmp_data = {}
+        try:
+            fmp_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{ticker}?apikey={FMP_KEY}"
+            fmp_resp = requests.get(fmp_url).json()
+            # Ujistíme se, že odpověď je seznam a není prázdná
+            if isinstance(fmp_resp, list) and len(fmp_resp) > 0:
+                fmp_data = fmp_resp[0]
+        except Exception:
+            pass # Pokud API selže (špatný klíč, limit), jdeme dál bez pádu kódu
 
-        def safe_get_fmp(key):
-            if fmp_resp and len(fmp_resp) > 0:
-                return fmp_resp[0].get(key, "HODNOTA_NEEXISTUJE")
+        # 2. Vždy si připravíme záchrannou síť v podobě yfinance
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+        except:
+            info = {}
+
+        # 3. Chytře vybereme tu nejlepší možnou hodnotu (FMP má přednost)
+        def get_best_val(fmp_key, yf_key):
+            val_fmp = fmp_data.get(fmp_key)
+            if val_fmp is not None and val_fmp != "":
+                return val_fmp
+            val_yf = info.get(yf_key)
+            if val_yf is not None and val_yf != "":
+                return val_yf
             return "HODNOTA_NEEXISTUJE"
 
         def format_money(val):
@@ -146,16 +160,20 @@ def get_graham_fundamentals(ticker_symbol):
                 return f"{val_float:,.2f} USD"
             except: return "HODNOTA_NEEXISTUJE"
 
-        # Sběr dat (Kombinace FMP a yfinance pro maximální přesnost)
-        pe = info.get('trailingPE', safe_get_fmp('peRatioTTM'))
-        pb = info.get('priceToBook', safe_get_fmp('priceToBookValueRatioTTM'))
-        debt = info.get('totalDebt', safe_get_fmp('totalDebtTTM'))
-        cash = info.get('totalCash', safe_get_fmp('cashAndCashEquivalentsTTM'))
-        current_ratio = info.get('currentRatio', safe_get_fmp('currentRatioTTM'))
-        revenue = info.get('totalRevenue', safe_get_fmp('revenuePerShareTTM')) # FMP dává často per share v TTM
-        fcf = info.get('freeCashflow', safe_get_fmp('freeCashFlowYieldTTM'))
+        # Sběr dat
+        pe = get_best_val('peRatioTTM', 'trailingPE')
+        pb = get_best_val('priceToBookValueRatioTTM', 'priceToBook')
+        debt = get_best_val('totalDebtTTM', 'totalDebt')
+        cash = get_best_val('cashAndCashEquivalentsTTM', 'totalCash')
+        current_ratio = get_best_val('currentRatioTTM', 'currentRatio')
+        fcf = get_best_val('freeCashFlowYieldTTM', 'freeCashflow')
         
-        # Grahamova matematika likvidity
+        # U celkových tržeb (Revenue) upřednostníme Yahoo, protože FMP zdarma dává jen hodnotu na akcii
+        revenue = info.get('totalRevenue')
+        if revenue is None or revenue == "":
+            revenue = "HODNOTA_NEEXISTUJE"
+
+        # Grahamova matematika likvidity (čistý dluh)
         margin_safety = "HODNOTA_NEEXISTUJE"
         if debt != "HODNOTA_NEEXISTUJE" and cash != "HODNOTA_NEEXISTUJE":
             try:
