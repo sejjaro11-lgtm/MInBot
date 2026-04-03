@@ -153,7 +153,7 @@ def get_graham_fundamentals(ticker_symbol):
             if val_yf is not None and val_yf != "": return val_yf
             return "HODNOTA_NEEXISTUJE"
 
-        # Opravený formátovač (zvládá záporná čísla a správnou měnu)
+        # Formátovače
         def format_money(val):
             if val == "HODNOTA_NEEXISTUJE" or val is None: return "HODNOTA_NEEXISTUJE"
             try:
@@ -166,6 +166,19 @@ def get_graham_fundamentals(ticker_symbol):
                 return f"{sign}{abs_val:,.2f} {currency}"
             except: return "HODNOTA_NEEXISTUJE"
 
+        def format_percent(val):
+            if val == "HODNOTA_NEEXISTUJE" or val is None: return "HODNOTA_NEEXISTUJE"
+            try:
+                val_float = float(val)
+                return f"{val_float * 100:.2f} %"
+            except: return "HODNOTA_NEEXISTUJE"
+            
+        def format_decimal(val):
+            if val == "HODNOTA_NEEXISTUJE" or val is None: return "HODNOTA_NEEXISTUJE"
+            try:
+                return f"{float(val):.2f}"
+            except: return "HODNOTA_NEEXISTUJE"
+
         # Sběr dat
         pe = get_best_val('peRatioTTM', 'trailingPE')
         pb = get_best_val('priceToBookValueRatioTTM', 'priceToBook')
@@ -173,6 +186,12 @@ def get_graham_fundamentals(ticker_symbol):
         cash = get_best_val('cashAndCashEquivalentsTTM', 'totalCash')
         current_ratio = get_best_val('currentRatioTTM', 'currentRatio')
         fcf = get_best_val('freeCashFlowYieldTTM', 'freeCashflow')
+        
+        # NOVÉ METRIKY: ROE, Debt/Equity, Dividend Yield
+        roe = get_best_val('roeTTM', 'returnOnEquity')
+        debt_to_equity = get_best_val('debtToEquityTTM', 'debtToEquity')
+        dividend_yield = get_best_val('dividendYieldPercentageTTM', 'dividendYield')
+        profit_margin = info.get('profitMargins', 'HODNOTA_NEEXISTUJE')
         
         revenue = info.get('totalRevenue')
         if revenue is None or revenue == "": revenue = "HODNOTA_NEEXISTUJE"
@@ -187,7 +206,7 @@ def get_graham_fundamentals(ticker_symbol):
             except: pass
 
         # ==========================================
-        # GRAHAMŮV SKÓROVACÍ SYSTÉM (Matematika v Pythonu)
+        # GRAHAMŮV SKÓROVACÍ SYSTÉM
         # ==========================================
         graham_score = 0
         graham_eval = []
@@ -247,20 +266,23 @@ def get_graham_fundamentals(ticker_symbol):
         summary = f"""
         [DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ PRO {ticker}]
         
-        ZÁKLADNÍ OCENĚNÍ:
-        P/E Ratio: {pe if pe != "HODNOTA_NEEXISTUJE" else "Není k dispozici (ztráta?)"}
-        P/B Ratio: {pb}
+        ZÁKLADNÍ OCENĚNÍ A ZISKOVOST:
+        P/E Ratio: {format_decimal(pe)}
+        P/B Ratio: {format_decimal(pb)}
+        ROE (Rentabilita vl. kapitálu): {format_percent(roe)}
+        Zisková marže: {format_percent(profit_margin)}
+        Dividendový výnos: {format_percent(dividend_yield)}
         
         FINANČNÍ SÍLA (ROZVAHA):
         Hotovost: {format_money(cash)}
         Celkový dluh: {format_money(debt)}
         Čistý dluh (Dluh - Hotovost): {margin_safety}
-        Current Ratio: {current_ratio}
+        Current Ratio: {format_decimal(current_ratio)}
+        Debt-to-Equity: {format_decimal(debt_to_equity)}
         
         VÝKONNOST A CASH FLOW:
         Celkové tržby: {format_money(revenue)}
         Volné cash flow: {format_money(fcf)}
-        Zisková marže: {info.get('profitMargins', 'HODNOTA_NEEXISTUJE')}
         
         =================================================
         TVRDÉ FAKTA - GRAHAMOVO SKÓRE: {graham_score} / 5
@@ -360,14 +382,14 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         {portfolio_context}
         
         TVŮJ ÚKOL:
-        Právě jsi obdržel od uživatele "DATA PŘÍMO Z BURZY", která nově obsahují i vypočítané GRAHAMOVO SKÓRE. Vypracuj na jejich základě špičkovou analýzu.
+        Právě jsi obdržel od uživatele "DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ", která obsahují rozšířené fundamenty a GRAHAMOVO SKÓRE. Vypracuj na jejich základě špičkovou analýzu.
         
         TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA PRO TEXT:
-        1. POVINNÁ ČÍSLA: Přesná čísla (Tržby, Marže, FCF, Dluh, Hotovost) DOSLOVA VYPIŠ do textu ve správné měně (přesně tak, jak ji vidíš v datech, např. USD, KRW, EUR).
-        2. GRAHAMOVO SKÓRE: V dodaných datech máš část "TVRDÉ FAKTA - GRAHAMOVO SKÓRE". Zahrň tento výsledek X/5 do své analýzy pod samostatný nadpis. Jasně a srozumitelně shrň uživateli, v kterých bodech firma podle Grahama uspěla a ve kterých selhala.
+        1. POVINNÁ ČÍSLA: Přesná čísla (Tržby, Marže, FCF, Dluh, Hotovost, ROE, Dividendový výnos, Debt-to-Equity) DOSLOVA VYPIŠ do textu.
+        2. GRAHAMOVO SKÓRE: Zahrň tento výsledek X/5 do své analýzy pod samostatný nadpis a detailně rozeber, v čem firma uspěla a v čem selhala.
         3. CHYBĚJÍCÍ DATA: U "HODNOTA_NEEXISTUJE" se nesmíš omlouvat za limity. Napiš "Tento údaj není u společnosti veřejně dostupný".
-        4. RIZIKA Z 10-K: Z dodaných textů z Pinecone (ZNALOSTI Z 10-K) vytáhni zcela konkrétní detaily.
-        5. FORMA: Použij nadpisy jako "### Základní ocenění a tržby", "### Hodnocení podle Benjamina Grahama" a "### Vhledy z výroční zprávy 10-K".
+        4. RIZIKA Z 10-K: Z dodaných textů z Pinecone vytáhni zcela konkrétní detaily (produkty, soudy). Žádné obecné fráze.
+        5. FORMA: Použij nadpisy jako "### Základní ocenění a rentabilita", "### Rozvaha a hotovost", "### Hodnocení podle Benjamina Grahama" a "### Vhledy z výroční zprávy 10-K".
         6. Mluv za sebe v první osobě. Čistá čeština.
         """
 
@@ -390,10 +412,10 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
             if fund_match:
                 fund_ticker = fund_match.group(1).strip().upper()
                 
-                with st.spinner(f"Stahuji data přímo z burzy pro {fund_ticker}..."):
+                with st.spinner(f"Stahuji rozšířená data přímo z burzy pro {fund_ticker}..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
-                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna čísla včetně Grahamova skóre a správné měny. Vypracuj podrobnou analýzu podle pravidel. Výslovně opiš do textu ty částky a pečlivě rozeber to Grahamovo hodnocení!"
+                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna čísla včetně nových metrik (ROE, Dividendy atd.) a Grahamova skóre. Vypracuj podrobnou analýzu podle pravidel. Výslovně opiš do textu ty částky, procenta a poměry!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
                     # 2. Zavoláme Mozek 2 (Analytika)
