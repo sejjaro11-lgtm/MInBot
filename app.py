@@ -123,7 +123,6 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
 def get_graham_fundamentals(ticker_symbol):
     ticker = ticker_symbol.upper()
     try:
-        # 1. Zkusíme FMP, ale bezpečně
         fmp_data = {}
         try:
             fmp_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{ticker}?apikey={FMP_KEY}"
@@ -133,19 +132,16 @@ def get_graham_fundamentals(ticker_symbol):
         except Exception:
             pass 
 
-        # 2. Záložní síť yfinance
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
         except:
             info = {}
 
-        # Detekce správné měny (USD, KRW, EUR atd.)
         currency = info.get('financialCurrency', info.get('currency', 'USD'))
         if not currency: currency = "USD"
         currency = currency.upper()
 
-        # 3. Výběr nejlepší hodnoty
         def get_best_val(fmp_key, yf_key):
             val_fmp = fmp_data.get(fmp_key)
             if val_fmp is not None and val_fmp != "": return val_fmp
@@ -153,7 +149,6 @@ def get_graham_fundamentals(ticker_symbol):
             if val_yf is not None and val_yf != "": return val_yf
             return "HODNOTA_NEEXISTUJE"
 
-        # Formátovače
         def format_money(val):
             if val == "HODNOTA_NEEXISTUJE" or val is None: return "HODNOTA_NEEXISTUJE"
             try:
@@ -161,42 +156,43 @@ def get_graham_fundamentals(ticker_symbol):
                 abs_val = abs(val_float)
                 sign = "-" if val_float < 0 else ""
                 
+                # OPRAVA: Přidána podpora pro biliony
+                if abs_val >= 1e12: return f"{sign}{abs_val/1e12:.2f} bil. {currency}"
                 if abs_val >= 1e9: return f"{sign}{abs_val/1e9:.2f} mld. {currency}"
                 if abs_val >= 1e6: return f"{sign}{abs_val/1e6:.2f} mil. {currency}"
                 return f"{sign}{abs_val:,.2f} {currency}"
             except: return "HODNOTA_NEEXISTUJE"
 
-        def format_percent(val):
-            if val == "HODNOTA_NEEXISTUJE" or val is None: return "HODNOTA_NEEXISTUJE"
-            try:
-                val_float = float(val)
-                return f"{val_float * 100:.2f} %"
-            except: return "HODNOTA_NEEXISTUJE"
-            
         def format_decimal(val):
             if val == "HODNOTA_NEEXISTUJE" or val is None: return "HODNOTA_NEEXISTUJE"
             try:
                 return f"{float(val):.2f}"
             except: return "HODNOTA_NEEXISTUJE"
 
-        # Sběr dat
         pe = get_best_val('peRatioTTM', 'trailingPE')
         pb = get_best_val('priceToBookValueRatioTTM', 'priceToBook')
         debt = get_best_val('totalDebtTTM', 'totalDebt')
         cash = get_best_val('cashAndCashEquivalentsTTM', 'totalCash')
         current_ratio = get_best_val('currentRatioTTM', 'currentRatio')
         fcf = get_best_val('freeCashFlowYieldTTM', 'freeCashflow')
-        
-        # NOVÉ METRIKY: ROE, Debt/Equity, Dividend Yield
-        roe = get_best_val('roeTTM', 'returnOnEquity')
         debt_to_equity = get_best_val('debtToEquityTTM', 'debtToEquity')
-        dividend_yield = get_best_val('dividendYieldPercentageTTM', 'dividendYield')
-        profit_margin = info.get('profitMargins', 'HODNOTA_NEEXISTUJE')
         
+        # OPRAVA: Správná extrakce procent
+        roe_fmp = fmp_data.get('roeTTM')
+        roe_yf = info.get('returnOnEquity')
+        roe = f"{float(roe_fmp) * 100:.2f} %" if roe_fmp is not None else (f"{float(roe_yf) * 100:.2f} %" if roe_yf is not None else "HODNOTA_NEEXISTUJE")
+
+        div_fmp = fmp_data.get('dividendYieldPercentageTTM')
+        div_yf = info.get('dividendYield')
+        # FMP již vrací jako procento (např. 1.27), yf vrací jako desetinné (0.0127)
+        dividend_yield = f"{float(div_fmp):.2f} %" if div_fmp is not None else (f"{float(div_yf) * 100:.2f} %" if div_yf is not None else "HODNOTA_NEEXISTUJE")
+
+        margin_yf = info.get('profitMargins')
+        profit_margin = f"{float(margin_yf) * 100:.2f} %" if margin_yf is not None else "HODNOTA_NEEXISTUJE"
+
         revenue = info.get('totalRevenue')
         if revenue is None or revenue == "": revenue = "HODNOTA_NEEXISTUJE"
 
-        # Matematika čistého dluhu
         margin_safety = "HODNOTA_NEEXISTUJE"
         net_debt_val = None
         if debt != "HODNOTA_NEEXISTUJE" and cash != "HODNOTA_NEEXISTUJE":
@@ -206,60 +202,60 @@ def get_graham_fundamentals(ticker_symbol):
             except: pass
 
         # ==========================================
-        # GRAHAMŮV SKÓROVACÍ SYSTÉM
+        # GRAHAMŮV SKÓROVACÍ SYSTÉM (Python logika)
         # ==========================================
         graham_score = 0
         graham_eval = []
 
-        # 1. P/E < 15
+        # 1. P/E
         pe_float = None
         try:
             pe_float = float(pe)
             if 0 < pe_float <= 15:
                 graham_score += 1
-                graham_eval.append("✅ P/E je pod 15 (Defenzivní ocenění)")
+                graham_eval.append("- ✅ P/E je pod 15 (Defenzivní ocenění)")
             else:
-                graham_eval.append("❌ P/E je nad 15 nebo nelze určit (Dražší akcie)")
-        except: graham_eval.append("❌ P/E chybí (Firma je ve ztrátě nebo data nejsou)")
+                graham_eval.append("- ❌ P/E je nad 15 nebo nelze určit (Dražší akcie)")
+        except: graham_eval.append("- ❌ P/E chybí (Firma je ve ztrátě nebo data nejsou)")
 
-        # 2. P/B < 1.5
+        # 2. P/B
         pb_float = None
         try:
             pb_float = float(pb)
             if 0 < pb_float <= 1.5:
                 graham_score += 1
-                graham_eval.append("✅ P/B je pod 1.5 (Dobré ocenění čistého majetku)")
+                graham_eval.append("- ✅ P/B je pod 1.5 (Dobré ocenění čistého majetku)")
             else:
-                graham_eval.append("❌ P/B je nad 1.5 (Trh si za majetek firmy žádá prémii)")
-        except: graham_eval.append("❌ P/B chybí")
+                graham_eval.append("- ❌ P/B je nad 1.5 (Trh si za majetek firmy žádá prémii)")
+        except: graham_eval.append("- ❌ P/B chybí")
 
-        # 3. P/E * P/B < 22.5
+        # 3. P/E * P/B
         try:
             if pe_float and pb_float and (pe_float * pb_float) <= 22.5 and pe_float > 0:
                 graham_score += 1
-                graham_eval.append("✅ Splňuje Grahamovo složené číslo (P/E * P/B <= 22.5)")
+                graham_eval.append("- ✅ Splňuje Grahamovo složené číslo (P/E * P/B <= 22.5)")
             else:
-                graham_eval.append("❌ Nesplňuje Grahamovo složené číslo (Ocenění je příliš vysoké)")
-        except: graham_eval.append("❌ Nelze spočítat Grahamovo složené číslo")
+                graham_eval.append("- ❌ Nesplňuje Grahamovo složené číslo (Ocenění je příliš vysoké)")
+        except: graham_eval.append("- ❌ Nelze spočítat Grahamovo složené číslo")
 
-        # 4. Current Ratio >= 2.0
+        # 4. Current Ratio
         try:
             cr_float = float(current_ratio)
             if cr_float >= 2.0:
                 graham_score += 1
-                graham_eval.append("✅ Běžná likvidita >= 2.0 (Silná krátkodobá schopnost splácet)")
+                graham_eval.append("- ✅ Běžná likvidita >= 2.0 (Silná krátkodobá schopnost splácet)")
             else:
-                graham_eval.append("❌ Běžná likvidita < 2.0 (Slabší krátkodobé zdraví)")
-        except: graham_eval.append("❌ Běžná likvidita chybí")
+                graham_eval.append("- ❌ Běžná likvidita < 2.0 (Slabší krátkodobé zdraví)")
+        except: graham_eval.append("- ❌ Běžná likvidita chybí")
 
-        # 5. Hotovost > Dluh (Záporný čistý dluh)
+        # 5. Hotovost vs Dluh
         if net_debt_val is not None:
             if net_debt_val < 0:
                 graham_score += 1
-                graham_eval.append("✅ Více hotovosti než dluhu (Excelentní finanční stabilita a polštář)")
+                graham_eval.append("- ✅ Více hotovosti než dluhu (Excelentní finanční stabilita a polštář)")
             else:
-                graham_eval.append("❌ Celkový dluh převyšuje hotovost (Běžné, ale ne ideální)")
-        else: graham_eval.append("❌ Nelze porovnat dluh a hotovost")
+                graham_eval.append("- ❌ Celkový dluh převyšuje hotovost (Běžné, ale ne ideální)")
+        else: graham_eval.append("- ❌ Nelze porovnat dluh a hotovost")
 
         graham_text = "\n".join(graham_eval)
 
@@ -269,9 +265,9 @@ def get_graham_fundamentals(ticker_symbol):
         ZÁKLADNÍ OCENĚNÍ A ZISKOVOST:
         P/E Ratio: {format_decimal(pe)}
         P/B Ratio: {format_decimal(pb)}
-        ROE (Rentabilita vl. kapitálu): {format_percent(roe)}
-        Zisková marže: {format_percent(profit_margin)}
-        Dividendový výnos: {format_percent(dividend_yield)}
+        ROE (Rentabilita vl. kapitálu): {roe}
+        Zisková marže: {profit_margin}
+        Dividendový výnos: {dividend_yield}
         
         FINANČNÍ SÍLA (ROZVAHA):
         Hotovost: {format_money(cash)}
@@ -285,7 +281,7 @@ def get_graham_fundamentals(ticker_symbol):
         Volné cash flow: {format_money(fcf)}
         
         =================================================
-        TVRDÉ FAKTA - GRAHAMOVO SKÓRE: {graham_score} / 5
+        TVRDÉ FAKTA - GRAHAMOVO SKÓRE: {graham_score}/5
         =================================================
         {graham_text}
         """
@@ -382,15 +378,28 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         {portfolio_context}
         
         TVŮJ ÚKOL:
-        Právě jsi obdržel od uživatele "DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ", která obsahují rozšířené fundamenty a GRAHAMOVO SKÓRE. Vypracuj na jejich základě špičkovou analýzu.
+        Právě jsi obdržel od uživatele "DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ". Vypracuj na jejich základě špičkovou analýzu.
         
         TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA PRO TEXT:
-        1. POVINNÁ ČÍSLA: Přesná čísla (Tržby, Marže, FCF, Dluh, Hotovost, ROE, Dividendový výnos, Debt-to-Equity) DOSLOVA VYPIŠ do textu.
-        2. GRAHAMOVO SKÓRE: Zahrň tento výsledek X/5 do své analýzy pod samostatný nadpis a detailně rozeber, v čem firma uspěla a v čem selhala.
-        3. CHYBĚJÍCÍ DATA: U "HODNOTA_NEEXISTUJE" se nesmíš omlouvat za limity. Napiš "Tento údaj není u společnosti veřejně dostupný".
-        4. RIZIKA Z 10-K: Z dodaných textů z Pinecone vytáhni zcela konkrétní detaily (produkty, soudy). Žádné obecné fráze.
-        5. FORMA: Použij nadpisy jako "### Základní ocenění a rentabilita", "### Rozvaha a hotovost", "### Hodnocení podle Benjamina Grahama" a "### Vhledy z výroční zprávy 10-K".
-        6. Mluv za sebe v první osobě. Čistá čeština.
+        1. STRUKTURA: Tvá odpověď MUSÍ BÝT strukturována PŘESNĚ podle níže uvedené šablony. Nesmíš měnit názvy nadpisů.
+        2. POVINNÁ ČÍSLA: Přesná čísla DOSLOVA VYPIŠ do textu.
+        3. CHYBĚJÍCÍ DATA: U "HODNOTA_NEEXISTUJE" napiš pouze "Údaj není veřejně dostupný".
+        4. GRAHAMOVO SKÓRE (PŘÍSNÝ ZÁKAZ): Z dodaných dat ("TVRDÉ FAKTA - GRAHAMOVO SKÓRE") MUSÍŠ doslova opsat VŠECH 5 BODŮ. Je absolutně zakázáno body slučovat nebo je zkracovat. Vždy musíš vypsat všech 5 odrážek (ať už s fajfkou nebo křížkem) přesně v tom znění, v jakém ti přišly v datech!
+        5. Mluv za sebe v první osobě. Čistá čeština.
+        
+        ŠABLONA ODPOVĚDI (DODRŽUJ PŘESNĚ TUTO STRUKTURU):
+        ### Základní ocenění a rentabilita
+        [Zde rozeber P/E, P/B, ROE, Ziskovou marži a Dividendový výnos. Použij přesná čísla z dat]
+
+        ### Rozvaha a hotovost
+        [Zde rozeber Hotovost, Celkový dluh, Čistý dluh, Current ratio a Debt-to-Equity]
+
+        ### Hodnocení podle Benjamina Grahama
+        [Napiš celkové skóre X/5]
+        [VYPIŠ PŘESNĚ VŠECH 5 ODRÁŽEK PŘEVZATÝCH Z DAT - NIC NEVYNECHÁVEJ!]
+
+        ### Vhledy z výroční zprávy 10-K
+        [Zde vypiš konkrétní rizika a plány ze ZNALOSTÍ 10-K]
         """
 
         def get_api_messages(prompt_to_use):
@@ -400,7 +409,6 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
             return msgs
 
         try:
-            # 1. Zavoláme Mozek 1 (Dispečera)
             response = client.chat.completions.create(
                 model="gpt-4o",
                 messages=get_api_messages(system_prompt_router)
@@ -415,10 +423,9 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                 with st.spinner(f"Stahuji rozšířená data přímo z burzy pro {fund_ticker}..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
-                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna čísla včetně nových metrik (ROE, Dividendy atd.) a Grahamova skóre. Vypracuj podrobnou analýzu podle pravidel. Výslovně opiš do textu ty částky, procenta a poměry!"
+                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna data. Pamatuj, odpověz PŘESNĚ podle předepsané šablony se čtyřmi nadpisy a u Grahama bezpodmínečně zkopíruj všech 5 odrážek!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
-                    # 2. Zavoláme Mozek 2 (Analytika)
                     response_2 = client.chat.completions.create(
                         model="gpt-4o",
                         messages=get_api_messages(system_prompt_analyst)
