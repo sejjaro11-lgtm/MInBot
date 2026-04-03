@@ -156,7 +156,6 @@ def get_graham_fundamentals(ticker_symbol):
                 abs_val = abs(val_float)
                 sign = "-" if val_float < 0 else ""
                 
-                # OPRAVA: Přidána podpora pro biliony
                 if abs_val >= 1e12: return f"{sign}{abs_val/1e12:.2f} bil. {currency}"
                 if abs_val >= 1e9: return f"{sign}{abs_val/1e9:.2f} mld. {currency}"
                 if abs_val >= 1e6: return f"{sign}{abs_val/1e6:.2f} mil. {currency}"
@@ -165,8 +164,7 @@ def get_graham_fundamentals(ticker_symbol):
 
         def format_decimal(val):
             if val == "HODNOTA_NEEXISTUJE" or val is None: return "HODNOTA_NEEXISTUJE"
-            try:
-                return f"{float(val):.2f}"
+            try: return f"{float(val):.2f}"
             except: return "HODNOTA_NEEXISTUJE"
 
         pe = get_best_val('peRatioTTM', 'trailingPE')
@@ -177,16 +175,29 @@ def get_graham_fundamentals(ticker_symbol):
         fcf = get_best_val('freeCashFlowYieldTTM', 'freeCashflow')
         debt_to_equity = get_best_val('debtToEquityTTM', 'debtToEquity')
         
-        # OPRAVA: Správná extrakce procent
+        # ROE logika
         roe_fmp = fmp_data.get('roeTTM')
         roe_yf = info.get('returnOnEquity')
-        roe = f"{float(roe_fmp) * 100:.2f} %" if roe_fmp is not None else (f"{float(roe_yf) * 100:.2f} %" if roe_yf is not None else "HODNOTA_NEEXISTUJE")
+        roe_val = None
+        if roe_fmp is not None and roe_fmp != "": roe_val = float(roe_fmp) * 100
+        elif roe_yf is not None and roe_yf != "": roe_val = float(roe_yf) * 100
+        roe = f"{roe_val:.2f} %" if roe_val is not None else "HODNOTA_NEEXISTUJE"
 
+        # Bezpečná dividenda (Pojistka proti 127 % atd.)
         div_fmp = fmp_data.get('dividendYieldPercentageTTM')
         div_yf = info.get('dividendYield')
-        # FMP již vrací jako procento (např. 1.27), yf vrací jako desetinné (0.0127)
-        dividend_yield = f"{float(div_fmp):.2f} %" if div_fmp is not None else (f"{float(div_yf) * 100:.2f} %" if div_yf is not None else "HODNOTA_NEEXISTUJE")
+        div_val = None
+        if div_fmp is not None and div_fmp != "": div_val = float(div_fmp)
+        elif div_yf is not None and div_yf != "": div_val = float(div_yf) * 100
+        
+        if div_val is not None:
+            # Pojistka: Žádná normální firma nemá dividendu 127%, pokud ano, jde o chybu API
+            if div_val > 50: div_val = div_val / 100 
+            dividend_yield = f"{div_val:.2f} %"
+        else:
+            dividend_yield = "HODNOTA_NEEXISTUJE"
 
+        # Marže
         margin_yf = info.get('profitMargins')
         profit_margin = f"{float(margin_yf) * 100:.2f} %" if margin_yf is not None else "HODNOTA_NEEXISTUJE"
 
@@ -202,12 +213,11 @@ def get_graham_fundamentals(ticker_symbol):
             except: pass
 
         # ==========================================
-        # GRAHAMŮV SKÓROVACÍ SYSTÉM (Python logika)
+        # GRAHAMŮV SKÓROVACÍ SYSTÉM
         # ==========================================
         graham_score = 0
         graham_eval = []
 
-        # 1. P/E
         pe_float = None
         try:
             pe_float = float(pe)
@@ -218,7 +228,6 @@ def get_graham_fundamentals(ticker_symbol):
                 graham_eval.append("- ❌ P/E je nad 15 nebo nelze určit (Dražší akcie)")
         except: graham_eval.append("- ❌ P/E chybí (Firma je ve ztrátě nebo data nejsou)")
 
-        # 2. P/B
         pb_float = None
         try:
             pb_float = float(pb)
@@ -229,7 +238,6 @@ def get_graham_fundamentals(ticker_symbol):
                 graham_eval.append("- ❌ P/B je nad 1.5 (Trh si za majetek firmy žádá prémii)")
         except: graham_eval.append("- ❌ P/B chybí")
 
-        # 3. P/E * P/B
         try:
             if pe_float and pb_float and (pe_float * pb_float) <= 22.5 and pe_float > 0:
                 graham_score += 1
@@ -238,7 +246,6 @@ def get_graham_fundamentals(ticker_symbol):
                 graham_eval.append("- ❌ Nesplňuje Grahamovo složené číslo (Ocenění je příliš vysoké)")
         except: graham_eval.append("- ❌ Nelze spočítat Grahamovo složené číslo")
 
-        # 4. Current Ratio
         try:
             cr_float = float(current_ratio)
             if cr_float >= 2.0:
@@ -248,7 +255,6 @@ def get_graham_fundamentals(ticker_symbol):
                 graham_eval.append("- ❌ Běžná likvidita < 2.0 (Slabší krátkodobé zdraví)")
         except: graham_eval.append("- ❌ Běžná likvidita chybí")
 
-        # 5. Hotovost vs Dluh
         if net_debt_val is not None:
             if net_debt_val < 0:
                 graham_score += 1
@@ -369,7 +375,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         # MOZEK 2: ČISTÝ ANALYTIK 
         # =======================================================
         system_prompt_analyst = f"""
-        Jsi MInBot, nekompromisní a přesný investiční analytik.
+        Jsi MInBot, nekompromisní a špičkový investiční analytik z Wall Street.
         
         ZNALOSTI Z 10-K REPORTŮ A KNIH:
         {context_books}
@@ -378,28 +384,31 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         {portfolio_context}
         
         TVŮJ ÚKOL:
-        Právě jsi obdržel od uživatele "DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ". Vypracuj na jejich základě špičkovou analýzu.
+        Právě jsi obdržel "DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ". Vypracuj naprosto detailní, hlubokou analýzu. Nesmíš být stručný! Každé číslo rozeber do hloubky a vysvětli jeho dopad na budoucnost firmy.
         
         TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA PRO TEXT:
-        1. STRUKTURA: Tvá odpověď MUSÍ BÝT strukturována PŘESNĚ podle níže uvedené šablony. Nesmíš měnit názvy nadpisů.
-        2. POVINNÁ ČÍSLA: Přesná čísla DOSLOVA VYPIŠ do textu.
-        3. CHYBĚJÍCÍ DATA: U "HODNOTA_NEEXISTUJE" napiš pouze "Údaj není veřejně dostupný".
-        4. GRAHAMOVO SKÓRE (PŘÍSNÝ ZÁKAZ): Z dodaných dat ("TVRDÉ FAKTA - GRAHAMOVO SKÓRE") MUSÍŠ doslova opsat VŠECH 5 BODŮ. Je absolutně zakázáno body slučovat nebo je zkracovat. Vždy musíš vypsat všech 5 odrážek (ať už s fajfkou nebo křížkem) přesně v tom znění, v jakém ti přišly v datech!
+        1. STRUKTURA: Tvá odpověď MUSÍ BÝT strukturována PŘESNĚ podle níže uvedené šablony s 5 pevnými nadpisy.
+        2. POVINNÁ ČÍSLA A KOMENTÁŘ: Přesná čísla DOSLOVA VYPIŠ do textu a přidej k nim hluboký profesionální komentář.
+        3. CHYBĚJÍCÍ DATA A 10-K: Pokud u čísla vidíš "HODNOTA_NEEXISTUJE", suše napiš "Údaj není veřejně dostupný". Pokud chybí data z 10-K (např. u zahraničních firem jako Samsung), chovej se jako profík a vysvětli, že 10-K je výhradně americký formulář SEC a firma vydává reporty v jiné formě.
+        4. GRAHAMOVO SKÓRE (PŘÍSNÝ ZÁKAZ): Z dodaných dat ("TVRDÉ FAKTA - GRAHAMOVO SKÓRE") MUSÍŠ doslova opsat VŠECH 5 BODŮ přesně tak, jak jdou po sobě. Je absolutně ZAKÁZÁNO odrážky slučovat nebo vynechávat! Vždy musíš mít přesně 5 odrážek!
         5. Mluv za sebe v první osobě. Čistá čeština.
         
         ŠABLONA ODPOVĚDI (DODRŽUJ PŘESNĚ TUTO STRUKTURU):
         ### Základní ocenění a rentabilita
-        [Zde rozeber P/E, P/B, ROE, Ziskovou marži a Dividendový výnos. Použij přesná čísla z dat]
+        [Detailně rozeber P/E, P/B, ROE, Ziskovou marži a Dividendový výnos. Použij přesná čísla a nesmíš být stručný]
 
         ### Rozvaha a hotovost
-        [Zde rozeber Hotovost, Celkový dluh, Čistý dluh, Current ratio a Debt-to-Equity]
+        [Detailně rozeber Hotovost, Celkový dluh, Čistý dluh, Current ratio a Debt-to-Equity. Zhodnoť detailně úroveň zadlužení]
 
         ### Hodnocení podle Benjamina Grahama
         [Napiš celkové skóre X/5]
-        [VYPIŠ PŘESNĚ VŠECH 5 ODRÁŽEK PŘEVZATÝCH Z DAT - NIC NEVYNECHÁVEJ!]
+        [VYPIŠ PŘESNĚ VŠECH 5 ODRÁŽEK PŘEVZATÝCH Z DAT - NESMÍŠ NIC SLOUČIT, KAŽDÝ BOD ZVLÁŠŤ!]
 
-        ### Vhledy z výroční zprávy 10-K
-        [Zde vypiš konkrétní rizika a plány ze ZNALOSTÍ 10-K]
+        ### Vhledy z výroční zprávy (10-K / Výroční report)
+        [Zde vypiš konkrétní rizika a plány ze ZNALOSTÍ 10-K. Pokud nemáš data u zahraniční firmy, upozorni na to, že 10-K je americký standard]
+
+        ### Celkové shrnutí a závěr
+        [Napiš jasný a nekompromisní závěr pro investora, shrň hlavní rizika a výhody]
         """
 
         def get_api_messages(prompt_to_use):
@@ -423,7 +432,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                 with st.spinner(f"Stahuji rozšířená data přímo z burzy pro {fund_ticker}..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
-                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna data. Pamatuj, odpověz PŘESNĚ podle předepsané šablony se čtyřmi nadpisy a u Grahama bezpodmínečně zkopíruj všech 5 odrážek!"
+                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna data. Pamatuj, odpověz PŘESNĚ podle předepsané šablony s 5 nadpisy, detailně se rozepiš jako Wall Street analytik a u Grahama bezpodmínečně zkopíruj VŠECH 5 ODRÁŽEK zvlášť!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
                     response_2 = client.chat.completions.create(
