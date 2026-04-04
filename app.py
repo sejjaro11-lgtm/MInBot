@@ -175,7 +175,6 @@ def get_graham_fundamentals(ticker_symbol):
         fcf = get_best_val('freeCashFlowYieldTTM', 'freeCashflow')
         debt_to_equity = get_best_val('debtToEquityTTM', 'debtToEquity')
         
-        # ROE logika
         roe_fmp = fmp_data.get('roeTTM')
         roe_yf = info.get('returnOnEquity')
         roe_val = None
@@ -183,7 +182,6 @@ def get_graham_fundamentals(ticker_symbol):
         elif roe_yf is not None and roe_yf != "": roe_val = float(roe_yf) * 100
         roe = f"{roe_val:.2f} %" if roe_val is not None else "HODNOTA_NEEXISTUJE"
 
-        # Bezpečná dividenda (Pojistka proti 127 % atd.)
         div_fmp = fmp_data.get('dividendYieldPercentageTTM')
         div_yf = info.get('dividendYield')
         div_val = None
@@ -191,13 +189,11 @@ def get_graham_fundamentals(ticker_symbol):
         elif div_yf is not None and div_yf != "": div_val = float(div_yf) * 100
         
         if div_val is not None:
-            # Pojistka: Žádná normální firma nemá dividendu 127%, pokud ano, jde o chybu API
             if div_val > 50: div_val = div_val / 100 
             dividend_yield = f"{div_val:.2f} %"
         else:
             dividend_yield = "HODNOTA_NEEXISTUJE"
 
-        # Marže
         margin_yf = info.get('profitMargins')
         profit_margin = f"{float(margin_yf) * 100:.2f} %" if margin_yf is not None else "HODNOTA_NEEXISTUJE"
 
@@ -213,55 +209,71 @@ def get_graham_fundamentals(ticker_symbol):
             except: pass
 
         # ==========================================
-        # GRAHAMŮV SKÓROVACÍ SYSTÉM
+        # GRAHAMŮV SKÓROVACÍ SYSTÉM S DYNAMICKÝMI HODNOTAMI
         # ==========================================
         graham_score = 0
         graham_eval = []
 
+        # 1. P/E
         pe_float = None
         try:
             pe_float = float(pe)
             if 0 < pe_float <= 15:
                 graham_score += 1
-                graham_eval.append("- ✅ P/E je pod 15 (Defenzivní ocenění)")
+                graham_eval.append(f"- ✅ P/E je {pe_float:.2f} (pod limitem 15, defenzivní ocenění)")
+            elif pe_float <= 0:
+                graham_eval.append(f"- ❌ P/E je {pe_float:.2f} (společnost aktuálně negeneruje zisk)")
             else:
-                graham_eval.append("- ❌ P/E je nad 15 nebo nelze určit (Dražší akcie)")
-        except: graham_eval.append("- ❌ P/E chybí (Firma je ve ztrátě nebo data nejsou)")
+                graham_eval.append(f"- ❌ P/E je {pe_float:.2f} (nad limitem 15, trh do ceny započítává budoucí růst)")
+        except: 
+            graham_eval.append("- ❌ P/E chybí (údaj není k dispozici)")
 
+        # 2. P/B
         pb_float = None
         try:
             pb_float = float(pb)
             if 0 < pb_float <= 1.5:
                 graham_score += 1
-                graham_eval.append("- ✅ P/B je pod 1.5 (Dobré ocenění čistého majetku)")
+                graham_eval.append(f"- ✅ P/B je {pb_float:.2f} (pod limitem 1.5, atraktivní ocenění čistého majetku)")
             else:
-                graham_eval.append("- ❌ P/B je nad 1.5 (Trh si za majetek firmy žádá prémii)")
-        except: graham_eval.append("- ❌ P/B chybí")
+                graham_eval.append(f"- ❌ P/B je {pb_float:.2f} (nad limitem 1.5, trh žádá za aktiva prémii)")
+        except: 
+            graham_eval.append("- ❌ P/B chybí (údaj není k dispozici)")
 
+        # 3. P/E * P/B
         try:
-            if pe_float and pb_float and (pe_float * pb_float) <= 22.5 and pe_float > 0:
-                graham_score += 1
-                graham_eval.append("- ✅ Splňuje Grahamovo složené číslo (P/E * P/B <= 22.5)")
+            if pe_float and pb_float:
+                graham_num = pe_float * pb_float
+                if graham_num <= 22.5 and pe_float > 0:
+                    graham_score += 1
+                    graham_eval.append(f"- ✅ Grahamovo číslo je {graham_num:.2f} (limit <= 22.5 splněn)")
+                else:
+                    graham_eval.append(f"- ❌ Grahamovo číslo je {graham_num:.2f} (limit <= 22.5 výrazně překročen)")
             else:
-                graham_eval.append("- ❌ Nesplňuje Grahamovo složené číslo (Ocenění je příliš vysoké)")
-        except: graham_eval.append("- ❌ Nelze spočítat Grahamovo složené číslo")
+                graham_eval.append("- ❌ Nelze spočítat Grahamovo složené číslo (chybí vstupní data)")
+        except: 
+            graham_eval.append("- ❌ Nelze spočítat Grahamovo složené číslo")
 
+        # 4. Current Ratio
         try:
             cr_float = float(current_ratio)
             if cr_float >= 2.0:
                 graham_score += 1
-                graham_eval.append("- ✅ Běžná likvidita >= 2.0 (Silná krátkodobá schopnost splácet)")
+                graham_eval.append(f"- ✅ Běžná likvidita je {cr_float:.2f} (limit >= 2.0 splněn, silná schopnost splácet dluhy)")
             else:
-                graham_eval.append("- ❌ Běžná likvidita < 2.0 (Slabší krátkodobé zdraví)")
-        except: graham_eval.append("- ❌ Běžná likvidita chybí")
+                graham_eval.append(f"- ❌ Běžná likvidita je {cr_float:.2f} (pod doporučeným limitem 2.0)")
+        except: 
+            graham_eval.append("- ❌ Běžná likvidita chybí (údaj není k dispozici)")
 
+        # 5. Hotovost vs Dluh
         if net_debt_val is not None:
             if net_debt_val < 0:
                 graham_score += 1
-                graham_eval.append("- ✅ Více hotovosti než dluhu (Excelentní finanční stabilita a polštář)")
+                graham_eval.append("- ✅ Více hotovosti než dluhu (excelentní finanční stabilita a bezpečnostní polštář)")
             else:
-                graham_eval.append("- ❌ Celkový dluh převyšuje hotovost (Běžné, ale ne ideální)")
-        else: graham_eval.append("- ❌ Nelze porovnat dluh a hotovost")
+                graham_eval.append("- ❌ Celkový dluh převyšuje hotovost (firma spoléhá na externí financování)")
+        else: 
+            graham_eval.append("- ❌ Nelze porovnat dluh a hotovost (údaj chybí)")
 
         graham_text = "\n".join(graham_eval)
 
