@@ -167,7 +167,10 @@ def get_graham_fundamentals(ticker_symbol):
             try: return f"{float(val):.2f}"
             except: return "HODNOTA_NEEXISTUJE"
 
-        pe = get_best_val('peRatioTTM', 'trailingPE')
+        # Přidáno rozlišení Trailing a Forward P/E
+        pe_trailing = get_best_val('peRatioTTM', 'trailingPE')
+        pe_forward = info.get('forwardPE', "HODNOTA_NEEXISTUJE") # Forward P/E čerpáme primárně z Yahoo
+        
         pb = get_best_val('priceToBookValueRatioTTM', 'priceToBook')
         debt = get_best_val('totalDebtTTM', 'totalDebt')
         cash = get_best_val('cashAndCashEquivalentsTTM', 'totalCash')
@@ -209,24 +212,24 @@ def get_graham_fundamentals(ticker_symbol):
             except: pass
 
         # ==========================================
-        # GRAHAMŮV SKÓROVACÍ SYSTÉM S DYNAMICKÝMI HODNOTAMI
+        # GRAHAMŮV SKÓROVACÍ SYSTÉM (Založen přísně na Trailing P/E)
         # ==========================================
         graham_score = 0
         graham_eval = []
 
-        # 1. P/E
+        # 1. P/E (Trailing)
         pe_float = None
         try:
-            pe_float = float(pe)
+            pe_float = float(pe_trailing)
             if 0 < pe_float <= 15:
                 graham_score += 1
-                graham_eval.append(f"- ✅ P/E je {pe_float:.2f} (pod limitem 15, defenzivní ocenění)")
+                graham_eval.append(f"- ✅ Trailing P/E je {pe_float:.2f} (pod limitem 15, defenzivní ocenění)")
             elif pe_float <= 0:
-                graham_eval.append(f"- ❌ P/E je {pe_float:.2f} (společnost aktuálně negeneruje zisk)")
+                graham_eval.append(f"- ❌ Trailing P/E je {pe_float:.2f} (společnost aktuálně negeneruje zisk)")
             else:
-                graham_eval.append(f"- ❌ P/E je {pe_float:.2f} (nad limitem 15, trh do ceny započítává budoucí růst)")
+                graham_eval.append(f"- ❌ Trailing P/E je {pe_float:.2f} (nad limitem 15, trh do ceny započítává budoucí růst)")
         except: 
-            graham_eval.append("- ❌ P/E chybí (údaj není k dispozici)")
+            graham_eval.append("- ❌ Trailing P/E chybí (údaj není k dispozici)")
 
         # 2. P/B
         pb_float = None
@@ -281,7 +284,8 @@ def get_graham_fundamentals(ticker_symbol):
         [DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ PRO {ticker}]
         
         ZÁKLADNÍ OCENĚNÍ A ZISKOVOST:
-        P/E Ratio: {format_decimal(pe)}
+        Trailing P/E Ratio (Historické): {format_decimal(pe_trailing)}
+        Forward P/E Ratio (Očekávané): {format_decimal(pe_forward)}
         P/B Ratio: {format_decimal(pb)}
         ROE (Rentabilita vl. kapitálu): {roe}
         Zisková marže: {profit_margin}
@@ -407,7 +411,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         
         ŠABLONA ODPOVĚDI (DODRŽUJ PŘESNĚ TUTO STRUKTURU):
         ### Základní ocenění a rentabilita
-        [Detailně rozeber P/E, P/B, ROE, Ziskovou marži a Dividendový výnos. Použij přesná čísla a nesmíš být stručný]
+        [Detailně rozeber historické Trailing P/E a očekávané Forward P/E. Vysvětli, co jejich rozdíl znamená pro růst či pokles zisků. Rozeber i P/B, ROE, Ziskovou marži a Dividendový výnos. Použij přesná čísla a nesmíš být stručný]
 
         ### Rozvaha a hotovost
         [Detailně rozeber Hotovost, Celkový dluh, Čistý dluh, Current ratio a Debt-to-Equity. Zhodnoť detailně úroveň zadlužení]
