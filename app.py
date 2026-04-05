@@ -9,9 +9,19 @@ import yfinance as yf
 import re
 import requests
 
+# Zkusíme načíst DuckDuckGo (pokud chybí, upozorníme)
+try:
+    from duckduckgo_search import DDGS
+    DDG_AVAILABLE = True
+except ImportError:
+    DDG_AVAILABLE = False
+
 # --- 1. ZÁKLADNÍ NASTAVENÍ ---
 st.set_page_config(page_title="MInBot - Investiční Rádce", page_icon="📈", layout="wide")
 st.title("📈 MInBot - Investiční Rádce")
+
+if not DDG_AVAILABLE:
+    st.warning("⚠️ Knihovna 'duckduckgo-search' není nainstalována. Přidej ji do requirements.txt!")
 
 # --- 2. NAČTENÍ KLÍČŮ (SECRETS) ---
 try:
@@ -119,6 +129,35 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
         
     return stats_summary
 
+# --- NOVÉ: 4.1 ZÍSKÁNÍ PŘEPISU HOVORŮ (FMP TRANSCRIPTS) ---
+def get_fmp_transcript(ticker):
+    try:
+        url = f"https://financialmodelingprep.com/api/v3/earning_call_transcript/{ticker}?apikey={FMP_KEY}"
+        resp = requests.get(url).json()
+        if isinstance(resp, list) and len(resp) > 0:
+            content = resp[0].get('content', '')
+            date = resp[0].get('date', 'Neznámé datum')
+            # Vezmeme jen prvních 3000 znaků (obvykle nejdůležitější projev CEO)
+            return f"(Datum hovoru: {date})\n{content[:3000]}..."
+        return "Údaj není veřejně dostupný (hovor nenalezen)."
+    except Exception as e:
+        return f"Chyba při stahování hovoru: {str(e)}"
+
+# --- NOVÉ: 4.2 ZÍSKÁNÍ ZPRÁV Z WEBU (DUCKDUCKGO) ---
+def get_ddg_web_data(ticker):
+    if not DDG_AVAILABLE:
+        return "Údaj není veřejně dostupný (chybí knihovna pro vyhledávání)."
+    try:
+        with DDGS() as ddgs:
+            # Hledáme aktuální zprávy o investor relations pro daný ticker
+            results = list(ddgs.text(f"{ticker} investor relations latest news annual report", max_results=3))
+            if results:
+                formatted_results = "\n".join([f"- {r.get('title', '')}: {r.get('body', '')}" for r in results])
+                return formatted_results
+            return "Na webu nebyly nalezeny žádné aktuální zprávy."
+    except Exception as e:
+        return f"Chyba při vyhledávání na webu: {str(e)}"
+
 # --- 4.5 FUNKCE PRO FUNDAMENTÁLNÍ DATA & GRAHAMOVO SKÓRE ---
 def get_graham_fundamentals(ticker_symbol):
     ticker = ticker_symbol.upper()
@@ -167,9 +206,8 @@ def get_graham_fundamentals(ticker_symbol):
             try: return f"{float(val):.2f}"
             except: return "HODNOTA_NEEXISTUJE"
 
-        # Přidáno rozlišení Trailing a Forward P/E
         pe_trailing = get_best_val('peRatioTTM', 'trailingPE')
-        pe_forward = info.get('forwardPE', "HODNOTA_NEEXISTUJE") # Forward P/E čerpáme primárně z Yahoo
+        pe_forward = info.get('forwardPE', "HODNOTA_NEEXISTUJE")
         
         pb = get_best_val('priceToBookValueRatioTTM', 'priceToBook')
         debt = get_best_val('totalDebtTTM', 'totalDebt')
@@ -212,12 +250,11 @@ def get_graham_fundamentals(ticker_symbol):
             except: pass
 
         # ==========================================
-        # GRAHAMŮV SKÓROVACÍ SYSTÉM (Založen přísně na Trailing P/E)
+        # GRAHAMŮV SKÓROVACÍ SYSTÉM (Trailing P/E)
         # ==========================================
         graham_score = 0
         graham_eval = []
 
-        # 1. P/E (Trailing)
         pe_float = None
         try:
             pe_float = float(pe_trailing)
@@ -231,7 +268,6 @@ def get_graham_fundamentals(ticker_symbol):
         except: 
             graham_eval.append("- ❌ Trailing P/E chybí (údaj není k dispozici)")
 
-        # 2. P/B
         pb_float = None
         try:
             pb_float = float(pb)
@@ -243,7 +279,6 @@ def get_graham_fundamentals(ticker_symbol):
         except: 
             graham_eval.append("- ❌ P/B chybí (údaj není k dispozici)")
 
-        # 3. P/E * P/B
         try:
             if pe_float and pb_float:
                 graham_num = pe_float * pb_float
@@ -257,7 +292,6 @@ def get_graham_fundamentals(ticker_symbol):
         except: 
             graham_eval.append("- ❌ Nelze spočítat Grahamovo složené číslo")
 
-        # 4. Current Ratio
         try:
             cr_float = float(current_ratio)
             if cr_float >= 2.0:
@@ -268,7 +302,6 @@ def get_graham_fundamentals(ticker_symbol):
         except: 
             graham_eval.append("- ❌ Běžná likvidita chybí (údaj není k dispozici)")
 
-        # 5. Hotovost vs Dluh
         if net_debt_val is not None:
             if net_debt_val < 0:
                 graham_score += 1
@@ -400,31 +433,35 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         {portfolio_context}
         
         TVŮJ ÚKOL:
-        Právě jsi obdržel "DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ". Vypracuj naprosto detailní, hlubokou analýzu. Nesmíš být stručný! Každé číslo rozeber do hloubky a vysvětli jeho dopad na budoucnost firmy.
+        Právě jsi obdržel "DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ". Vypracuj naprosto detailní, hlubokou analýzu. 
         
         TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA PRO TEXT:
-        1. STRUKTURA: Tvá odpověď MUSÍ BÝT strukturována PŘESNĚ podle níže uvedené šablony s 5 pevnými nadpisy.
+        1. STRUKTURA: Tvá odpověď MUSÍ BÝT strukturována PŘESNĚ podle níže uvedené šablony se 6 pevnými nadpisy.
         2. POVINNÁ ČÍSLA A KOMENTÁŘ: Přesná čísla DOSLOVA VYPIŠ do textu a přidej k nim hluboký profesionální komentář.
-        3. CHYBĚJÍCÍ DATA A 10-K: Pokud u čísla vidíš "HODNOTA_NEEXISTUJE", suše napiš "Údaj není veřejně dostupný". Pokud chybí data z 10-K (např. u zahraničních firem jako Samsung), chovej se jako profík a vysvětli, že 10-K je výhradně americký formulář SEC a firma vydává reporty v jiné formě.
-        4. GRAHAMOVO SKÓRE (PŘÍSNÝ ZÁKAZ): Z dodaných dat ("TVRDÉ FAKTA - GRAHAMOVO SKÓRE") MUSÍŠ doslova opsat VŠECH 5 BODŮ přesně tak, jak jdou po sobě. Je absolutně ZAKÁZÁNO odrážky slučovat nebo vynechávat! Vždy musíš mít přesně 5 odrážek!
-        5. Mluv za sebe v první osobě. Čistá čeština.
+        3. CHYBĚJÍCÍ DATA: Pokud u čísla vidíš "HODNOTA_NEEXISTUJE", suše napiš "Údaj není veřejně dostupný". 
+        4. GRAHAMOVO SKÓRE (PŘÍSNÝ ZÁKAZ): Z dodaných dat ("TVRDÉ FAKTA - GRAHAMOVO SKÓRE") MUSÍŠ doslova opsat VŠECH 5 BODŮ. Je absolutně ZAKÁZÁNO odrážky slučovat nebo vynechávat! 
+        5. KŘÍŽOVÁ KONTROLA: V datech máš "DATA Z HOVORU S INVESTORY" a "DATA Z WEBU". Porovnej je. Pokud se shodují, potvrď to. Pokud si protiřečí, upozorni uživatele. Pokud jedno chybí, pracuj s tím druhým, ale transparentně to přiznej.
+        6. Mluv za sebe v první osobě. Čistá čeština.
         
         ŠABLONA ODPOVĚDI (DODRŽUJ PŘESNĚ TUTO STRUKTURU):
         ### Základní ocenění a rentabilita
-        [Detailně rozeber historické Trailing P/E a očekávané Forward P/E. Vysvětli, co jejich rozdíl znamená pro růst či pokles zisků. Rozeber i P/B, ROE, Ziskovou marži a Dividendový výnos. Použij přesná čísla a nesmíš být stručný]
+        [Detailně rozeber historické Trailing P/E a očekávané Forward P/E. Rozeber P/B, ROE, Ziskovou marži a Dividendový výnos.]
 
         ### Rozvaha a hotovost
-        [Detailně rozeber Hotovost, Celkový dluh, Čistý dluh, Current ratio a Debt-to-Equity. Zhodnoť detailně úroveň zadlužení]
+        [Detailně rozeber Hotovost, Celkový dluh, Čistý dluh, Current ratio a Debt-to-Equity. Zhodnoť úroveň zadlužení.]
 
         ### Hodnocení podle Benjamina Grahama
         [Napiš celkové skóre X/5]
-        [VYPIŠ PŘESNĚ VŠECH 5 ODRÁŽEK PŘEVZATÝCH Z DAT - NESMÍŠ NIC SLOUČIT, KAŽDÝ BOD ZVLÁŠŤ!]
+        [VYPIŠ PŘESNĚ VŠECH 5 ODRÁŽEK PŘEVZATÝCH Z DAT!]
 
-        ### Vhledy z výroční zprávy (10-K / Výroční report)
-        [Zde vypiš konkrétní rizika a plány ze ZNALOSTÍ 10-K. Pokud nemáš data u zahraniční firmy, upozorni na to, že 10-K je americký standard]
+        ### Vhledy z výroční zprávy a 10-K
+        [Zde vypiš konkrétní rizika a plány ze ZNALOSTÍ 10-K a KNIH.]
+
+        ### Křížová kontrola informací (Hovor vs. Web)
+        [Zde syntetizuj to nejdůležitější z dodaných "DAT Z HOVORU" a "DAT Z WEBU". Pokud si zdroje protiřečí, nebo jeden chybí, explicitně na to upozorni.]
 
         ### Celkové shrnutí a závěr
-        [Napiš jasný a nekompromisní závěr pro investora, shrň hlavní rizika a výhody]
+        [Napiš jasný a nekompromisní závěr pro investora, shrň hlavní rizika a výhody.]
         """
 
         def get_api_messages(prompt_to_use):
@@ -445,10 +482,24 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
             if fund_match:
                 fund_ticker = fund_match.group(1).strip().upper()
                 
-                with st.spinner(f"Stahuji rozšířená data přímo z burzy pro {fund_ticker}..."):
+                with st.spinner(f"Stahuji rozšířená data a provádím křížovou kontrolu webu pro {fund_ticker}..."):
+                    # 1. Základní fundamenty
                     fund_context = get_graham_fundamentals(fund_ticker)
+                    # 2. Hovory (FMP)
+                    transcript_data = get_fmp_transcript(fund_ticker)
+                    # 3. Web (DuckDuckGo)
+                    web_data = get_ddg_web_data(fund_ticker)
                     
-                    hidden_injection = f"Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}\n\nNyní máš všechna data. Pamatuj, odpověz PŘESNĚ podle předepsané šablony s 5 nadpisy, detailně se rozepiš jako Wall Street analytik a u Grahama bezpodmínečně zkopíruj VŠECH 5 ODRÁŽEK zvlášť!"
+                    hidden_injection = f"""Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}
+                    
+                    DATA Z HOVORU S INVESTORY (FMP):
+                    {transcript_data}
+                    
+                    DATA Z WEBU (DuckDuckGo):
+                    {web_data}
+                    
+                    Nyní máš všechna data. Pamatuj, odpověz PŘESNĚ podle předepsané šablony se 6 nadpisy. Věnuj velkou pozornost sekci 'Křížová kontrola' a analyzuj rozdíly mezi hovorem a webem!"""
+                    
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
                     response_2 = client.chat.completions.create(
