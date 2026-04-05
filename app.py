@@ -129,7 +129,15 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
         
     return stats_summary
 
-# --- NOVÉ: 4.1 ZÍSKÁNÍ PŘEPISU HOVORŮ (FMP TRANSCRIPTS) ---
+# --- ZJIŠTĚNÍ JMÉNA FIRMY PRO LEPŠÍ VYHLEDÁVÁNÍ ---
+def get_company_name(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        return stock.info.get('shortName', stock.info.get('longName', ticker))
+    except:
+        return ticker
+
+# --- 4.1 ZÍSKÁNÍ PŘEPISU HOVORŮ (FMP TRANSCRIPTS) ---
 def get_fmp_transcript(ticker):
     try:
         url = f"https://financialmodelingprep.com/api/v3/earning_call_transcript/{ticker}?apikey={FMP_KEY}"
@@ -137,24 +145,23 @@ def get_fmp_transcript(ticker):
         if isinstance(resp, list) and len(resp) > 0:
             content = resp[0].get('content', '')
             date = resp[0].get('date', 'Neznámé datum')
-            # Vezmeme jen prvních 3000 znaků (obvykle nejdůležitější projev CEO)
             return f"(Datum hovoru: {date})\n{content[:3000]}..."
-        return "Údaj není veřejně dostupný (hovor nenalezen)."
+        return "Údaj není veřejně dostupný (hovor v databázi FMP nenalezen)."
     except Exception as e:
         return f"Chyba při stahování hovoru: {str(e)}"
 
-# --- NOVÉ: 4.2 ZÍSKÁNÍ ZPRÁV Z WEBU (DUCKDUCKGO) ---
-def get_ddg_web_data(ticker):
+# --- 4.2 ZÍSKÁNÍ ZPRÁV Z WEBU (DUCKDUCKGO) ---
+def get_ddg_web_data(company_name):
     if not DDG_AVAILABLE:
         return "Údaj není veřejně dostupný (chybí knihovna pro vyhledávání)."
     try:
         with DDGS() as ddgs:
-            # Hledáme aktuální zprávy o investor relations pro daný ticker
-            results = list(ddgs.text(f"{ticker} investor relations latest news annual report", max_results=3))
+            query = f'"{company_name}" investor relations earnings report news'
+            results = list(ddgs.text(query, max_results=4))
             if results:
                 formatted_results = "\n".join([f"- {r.get('title', '')}: {r.get('body', '')}" for r in results])
                 return formatted_results
-            return "Na webu nebyly nalezeny žádné aktuální zprávy."
+            return "Na webu nebyly nalezeny žádné aktuální zprávy z oblasti investor relations."
     except Exception as e:
         return f"Chyba při vyhledávání na webu: {str(e)}"
 
@@ -426,42 +433,47 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         system_prompt_analyst = f"""
         Jsi MInBot, nekompromisní a špičkový investiční analytik z Wall Street.
         
-        ZNALOSTI Z 10-K REPORTŮ A KNIH:
+        ZNALOSTI Z REPORTŮ A KNIH (Pinecone):
         {context_books}
         
         DATA Z TABULEK:
         {portfolio_context}
         
         TVŮJ ÚKOL:
-        Právě jsi obdržel "DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ". Vypracuj naprosto detailní, hlubokou analýzu. 
+        Vypracuj naprosto detailní, hlubokou analýzu na základě dodaných dat z burzy, webu a hovorů.
         
-        TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA PRO TEXT:
-        1. STRUKTURA: Tvá odpověď MUSÍ BÝT strukturována PŘESNĚ podle níže uvedené šablony se 6 pevnými nadpisy.
-        2. POVINNÁ ČÍSLA A KOMENTÁŘ: Přesná čísla DOSLOVA VYPIŠ do textu a přidej k nim hluboký profesionální komentář.
-        3. CHYBĚJÍCÍ DATA: Pokud u čísla vidíš "HODNOTA_NEEXISTUJE", suše napiš "Údaj není veřejně dostupný". 
-        4. GRAHAMOVO SKÓRE (PŘÍSNÝ ZÁKAZ): Z dodaných dat ("TVRDÉ FAKTA - GRAHAMOVO SKÓRE") MUSÍŠ doslova opsat VŠECH 5 BODŮ. Je absolutně ZAKÁZÁNO odrážky slučovat nebo vynechávat! 
-        5. KŘÍŽOVÁ KONTROLA: V datech máš "DATA Z HOVORU S INVESTORY" a "DATA Z WEBU". Porovnej je. Pokud se shodují, potvrď to. Pokud si protiřečí, upozorni uživatele. Pokud jedno chybí, pracuj s tím druhým, ale transparentně to přiznej.
-        6. Mluv za sebe v první osobě. Čistá čeština.
+        TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA PRO TEXT A STRUKTURU:
+        1. DYNAMICKÁ VÝHYBKA: Tvá odpověď musí přesně dodržet níže uvedenou strukturu. Rozhodni, zda analyzuješ americkou firmu (disponuje 10-K) nebo zahraniční firmu (nemá 10-K formulář).
+        2. POVINNÁ ČÍSLA: Přesná čísla DOSLOVA VYPIŠ do textu a přidej hluboký komentář. U "HODNOTA_NEEXISTUJE" napiš "Údaj není veřejně dostupný".
+        3. GRAHAMOVO SKÓRE: MUSÍŠ doslova opsat VŠECH 5 BODŮ. Nezkracuj je!
+        4. Mluv za sebe v první osobě. Čistá čeština.
         
-        ŠABLONA ODPOVĚDI (DODRŽUJ PŘESNĚ TUTO STRUKTURU):
+        ŠABLONA ODPOVĚDI (DODRŽUJ PŘESNĚ):
+        
         ### Základní ocenění a rentabilita
-        [Detailně rozeber historické Trailing P/E a očekávané Forward P/E. Rozeber P/B, ROE, Ziskovou marži a Dividendový výnos.]
+        [Rozeber Trailing P/E, Forward P/E, P/B, ROE, Ziskovou marži a Dividendový výnos.]
 
         ### Rozvaha a hotovost
-        [Detailně rozeber Hotovost, Celkový dluh, Čistý dluh, Current ratio a Debt-to-Equity. Zhodnoť úroveň zadlužení.]
+        [Rozeber Hotovost, Celkový dluh, Čistý dluh, Current ratio a Debt-to-Equity.]
 
         ### Hodnocení podle Benjamina Grahama
-        [Napiš celkové skóre X/5]
-        [VYPIŠ PŘESNĚ VŠECH 5 ODRÁŽEK PŘEVZATÝCH Z DAT!]
+        [Napiš celkové skóre X/5 a VYPIŠ PŘESNĚ VŠECH 5 ODRÁŽEK PŘEVZATÝCH Z DAT!]
 
-        ### Vhledy z výroční zprávy a 10-K
-        [Zde vypiš konkrétní rizika a plány ze ZNALOSTÍ 10-K a KNIH.]
+        [VYBER A VLOŽ POUZE JEDEN Z NÁSLEDUJÍCÍCH DVOU NADPISŮ:]
+        (VARIANTA A - Pokud má firma 10-K / Americká firma):
+        ### Tvrdá data z 10-K formuláře
+        [Vypiš konkrétní rizika a plány z dodaných ZNALOSTÍ.]
+        
+        (VARIANTA B - Pokud firma NEMÁ 10-K / Zahraniční firma):
+        ### Lokální výroční zprávy a hovory s akcionáři
+        [Vytěž rizika a strategii z dodaných dat z webu a z hovoru managementu z FMP.]
 
-        ### Křížová kontrola informací (Hovor vs. Web)
-        [Zde syntetizuj to nejdůležitější z dodaných "DAT Z HOVORU" a "DAT Z WEBU". Pokud si zdroje protiřečí, nebo jeden chybí, explicitně na to upozorni.]
+        [VŽDY VLOŽ TENTO NADPIS:]
+        ### Syntéza tří světů (Křížová kontrola)
+        [Zde propoj všechny 3 zdroje: 1) Historická tvrdá data z 10-K či lokálních zpráv, 2) Data z hovoru s investory (FMP), 3) Aktuální zprávy z webu (DuckDuckGo). Analyzuj jejich shody či rozpory a ukaž, kam firma reálně směřuje.]
 
         ### Celkové shrnutí a závěr
-        [Napiš jasný a nekompromisní závěr pro investora, shrň hlavní rizika a výhody.]
+        [Jasný a nekompromisní závěr pro investora, shrň hlavní rizika a výhody.]
         """
 
         def get_api_messages(prompt_to_use):
@@ -483,14 +495,14 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                 fund_ticker = fund_match.group(1).strip().upper()
                 
                 with st.spinner(f"Stahuji rozšířená data a provádím křížovou kontrolu webu pro {fund_ticker}..."):
-                    # 1. Základní fundamenty
-                    fund_context = get_graham_fundamentals(fund_ticker)
-                    # 2. Hovory (FMP)
-                    transcript_data = get_fmp_transcript(fund_ticker)
-                    # 3. Web (DuckDuckGo)
-                    web_data = get_ddg_web_data(fund_ticker)
                     
-                    hidden_injection = f"""Zde jsou data z burzy pro {fund_ticker}:\n{fund_context}
+                    company_name = get_company_name(fund_ticker)
+                    
+                    fund_context = get_graham_fundamentals(fund_ticker)
+                    transcript_data = get_fmp_transcript(fund_ticker)
+                    web_data = get_ddg_web_data(company_name)
+                    
+                    hidden_injection = f"""Zde jsou data z burzy pro {fund_ticker} ({company_name}):\n{fund_context}
                     
                     DATA Z HOVORU S INVESTORY (FMP):
                     {transcript_data}
@@ -498,7 +510,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                     DATA Z WEBU (DuckDuckGo):
                     {web_data}
                     
-                    Nyní máš všechna data. Pamatuj, odpověz PŘESNĚ podle předepsané šablony se 6 nadpisy. Věnuj velkou pozornost sekci 'Křížová kontrola' a analyzuj rozdíly mezi hovorem a webem!"""
+                    Nyní máš všechna data. Pamatuj, tvůj text musí mít jasnou strukturu. U 4. nadpisu si vyber variantu podle toho, zda je to americká nebo zahraniční firma. Sekci "Syntéza tří světů" udělej co nejvíce analytickou!"""
                     
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
