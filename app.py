@@ -43,6 +43,17 @@ def get_model():
 
 model = get_model()
 
+# --- 2.5 KAMUFLÁŽ PRO YAHOO FINANCE (USER-AGENT) ---
+def get_yf_session():
+    """Vytvoří HTTP session, která se tváří jako reálný prohlížeč Chrome na Windows."""
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5"
+    })
+    return session
+
 # --- 3. NAČTENÍ DAT Z GOOGLE SHEETS (Skrytě) ---
 SHEET_ID = "1gAp2_XHEiNzQB7uODtcK2FmLrEXFm2yQ0wPNo6sJTds"
 
@@ -72,9 +83,10 @@ except Exception as e:
 # --- 4. FUNKCE PRO VYKRESLENÍ A ANALÝZU GRAFU ---
 def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
     stats_summary = None 
+    session = get_yf_session() # Nasazení masky
     try:
         with st.spinner(f"Analyzuji data pro {ticker_symbol}..."):
-            data = yf.download(ticker_symbol, period="max", progress=False)
+            data = yf.download(ticker_symbol, period="max", session=session, progress=False)
             if data.empty:
                 st.error(f"Pro symbol {ticker_symbol} nejsou data.")
                 return None
@@ -132,7 +144,8 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
 # --- ZJIŠTĚNÍ JMÉNA FIRMY PRO LEPŠÍ VYHLEDÁVÁNÍ ---
 def get_company_name(ticker):
     try:
-        stock = yf.Ticker(ticker)
+        session = get_yf_session()
+        stock = yf.Ticker(ticker, session=session)
         return stock.info.get('shortName', stock.info.get('longName', ticker))
     except:
         return ticker
@@ -179,7 +192,8 @@ def get_graham_fundamentals(ticker_symbol):
             pass 
 
         try:
-            stock = yf.Ticker(ticker)
+            session = get_yf_session() # Nasazení masky pro získání fundamentů
+            stock = yf.Ticker(ticker, session=session)
             info = stock.info
         except:
             info = {}
@@ -223,6 +237,10 @@ def get_graham_fundamentals(ticker_symbol):
         fcf = get_best_val('freeCashFlowYieldTTM', 'freeCashflow')
         debt_to_equity = get_best_val('debtToEquityTTM', 'debtToEquity')
         
+        # KRIZOVÝ PROTOKOL: Kontrola, zda nedošlo k zablokování dat
+        if pe_trailing == "HODNOTA_NEEXISTUJE" and pb == "HODNOTA_NEEXISTUJE" and current_ratio == "HODNOTA_NEEXISTUJE":
+            return "[CRITICAL_DATA_BLOCK]"
+
         roe_fmp = fmp_data.get('roeTTM')
         roe_yf = info.get('returnOnEquity')
         roe_val = None
@@ -507,47 +525,54 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                     company_name = get_company_name(fund_ticker)
                     
                     fund_context = get_graham_fundamentals(fund_ticker)
-                    transcript_data = get_fmp_transcript(fund_ticker)
-                    web_data = get_ddg_web_data(company_name)
                     
-                    hidden_injection = f"""Zde jsou data z burzy pro {fund_ticker} ({company_name}):\n{fund_context}
-                    
-                    DATA Z HOVORU S INVESTORY (FMP):
-                    {transcript_data}
-                    
-                    DATA Z WEBU (DuckDuckGo):
-                    {web_data}
-                    
-                    Nyní máš všechna data. Pamatuj, tvůj text musí mít jasnou strukturu. Důraz kladen na sekci "Typologie investora" - jasně urči rizikový profil a roli v portfoliu!"""
-                    
-                    st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
-                    
-                    response_2 = client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=get_api_messages(system_prompt_analyst)
-                    )
-                    final_answer = response_2.choices[0].message.content or ""
-                    
-                    chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", final_answer, re.IGNORECASE)
-                    chart_ticker = None; start_year = None; end_year = None
-                    if chart_match:
-                        content = chart_match.group(1)
-                        final_answer = final_answer.replace(chart_match.group(0), "").strip()
-                        parts = [p.strip() for p in content.split('|')]
-                        if len(parts) >= 1: chart_ticker = parts[0]
-                        if len(parts) >= 2: start_year = parts[1] if parts[1] else None
-                        if len(parts) >= 3: end_year = parts[2] if parts[2] else None
-
-                    if not final_answer:
-                        final_answer = "Omlouvám se, nastala neočekávaná chyba při psaní textu."
+                    # AKTIVOVÁN KRIZOVÝ PROTOKOL
+                    if "[CRITICAL_DATA_BLOCK]" in fund_context:
+                        error_msg = f"⚠️ **Kritická chyba stahování dat:**\n\nServery burzy (Yahoo/FMP) aktuálně zablokovaly náš přístup k číselným datům pro `{fund_ticker}` (aktivována ochrana proti botům). Než abych generoval nepřesnou analýzu s chybějícími daty, proces jsem raději zastavil. Zkuste to prosím znovu za několik minut."
+                        st.markdown(error_msg)
+                        st.session_state.messages.append({"role": "assistant", "content": error_msg, "hidden": False})
+                    else:
+                        transcript_data = get_fmp_transcript(fund_ticker)
+                        web_data = get_ddg_web_data(company_name)
                         
-                    st.markdown(final_answer)
-                    st.session_state.messages.append({"role": "assistant", "content": final_answer, "hidden": False, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
-                    
-                    if chart_ticker:
-                        stats_context = analyze_and_plot(chart_ticker, start_year, end_year)
-                        if stats_context:
-                            st.session_state.messages.append({"role": "user", "content": stats_context, "hidden": True})
+                        hidden_injection = f"""Zde jsou data z burzy pro {fund_ticker} ({company_name}):\n{fund_context}
+                        
+                        DATA Z HOVORU S INVESTORY (FMP):
+                        {transcript_data}
+                        
+                        DATA Z WEBU (DuckDuckGo):
+                        {web_data}
+                        
+                        Nyní máš všechna data. Pamatuj, tvůj text musí mít jasnou strukturu. Důraz kladen na sekci "Typologie investora" - jasně urči rizikový profil a roli v portfoliu!"""
+                        
+                        st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
+                        
+                        response_2 = client.chat.completions.create(
+                            model="gpt-4o",
+                            messages=get_api_messages(system_prompt_analyst)
+                        )
+                        final_answer = response_2.choices[0].message.content or ""
+                        
+                        chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", final_answer, re.IGNORECASE)
+                        chart_ticker = None; start_year = None; end_year = None
+                        if chart_match:
+                            content = chart_match.group(1)
+                            final_answer = final_answer.replace(chart_match.group(0), "").strip()
+                            parts = [p.strip() for p in content.split('|')]
+                            if len(parts) >= 1: chart_ticker = parts[0]
+                            if len(parts) >= 2: start_year = parts[1] if parts[1] else None
+                            if len(parts) >= 3: end_year = parts[2] if parts[2] else None
+
+                        if not final_answer:
+                            final_answer = "Omlouvám se, nastala neočekávaná chyba při psaní textu."
+                            
+                        st.markdown(final_answer)
+                        st.session_state.messages.append({"role": "assistant", "content": final_answer, "hidden": False, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
+                        
+                        if chart_ticker:
+                            stats_context = analyze_and_plot(chart_ticker, start_year, end_year)
+                            if stats_context:
+                                st.session_state.messages.append({"role": "user", "content": stats_context, "hidden": True})
             else:
                 clean_answer = raw_answer
                 chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", clean_answer, re.IGNORECASE)
