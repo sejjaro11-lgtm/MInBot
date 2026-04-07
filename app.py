@@ -139,7 +139,7 @@ def get_graham_fundamentals(ticker_symbol):
         metrics_data = {}
         yf_info = {}
         
-        # 1. Zkusit FMP
+        # 1. Zkusit FMP (Hlavní zdroj)
         try:
             q_url = f"https://financialmodelingprep.com/api/v3/quote/{ticker}?apikey={FMP_KEY}"
             q_resp = requests.get(q_url).json()
@@ -156,10 +156,11 @@ def get_graham_fundamentals(ticker_symbol):
             yf_info = stock.info if stock.info else {}
         except: pass
 
+        # Krizový protokol
         if not quote_data and not metrics_data and not yf_info:
             return "[CRITICAL_DATA_BLOCK]"
 
-        # Sjednocení dat (FMP má přednost, Yahoo lepí díry)
+        # Sjednocení dat
         def get_best_val(fmp_q_key, fmp_m_key, yf_key):
             if fmp_q_key and quote_data.get(fmp_q_key): return quote_data.get(fmp_q_key)
             if fmp_m_key and metrics_data.get(fmp_m_key): return metrics_data.get(fmp_m_key)
@@ -330,9 +331,15 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         results = index.query(vector=model.encode(prompt).tolist(), top_k=8, include_metadata=True)
         context_books = "".join([f"\n[Zdroj: {r['metadata']['source']}]: {r['metadata']['text']}\n" for r in results['matches'] if 'text' in r['metadata']])
 
-        system_prompt_router = "Jsi MInBot. NESMÍŠ psát text. Tvá JEDINÁ povolená odpověď je [FETCH: TICKER]."
+        system_prompt_router = """
+        Jsi inteligentní burzovní dispečer. Tvým JEDINÝM úkolem je identifikovat, na jakou společnost se uživatel ptá, a najít její oficiální burzovní ticker (např. Apple = AAPL, Meta = META, ČEZ = CEZ.PR).
+        NESMÍŠ psát žádný text, nesmíš psát analýzu. 
+        Tvá JEDINÁ povolená odpověď je speciální značka s tickerem. 
+        Formát: [FETCH: HLEDANY_TICKER]
+        Příklad 1: Uživatel řekne "co mi řekneš o metě?", ty odpovíš: [FETCH: META]
+        Příklad 2: Uživatel řekne "analyzuj microsoft", ty odpovíš: [FETCH: MSFT]
+        """
         
-        # OBNOVEN PROMPT: Plná hloubka, zákaz stručnosti a přehledné odrážky!
         system_prompt_analyst = f"""
         Jsi MInBot, nekompromisní a špičkový investiční analytik z Wall Street.
         ZNALOSTI Z REPORTŮ: {context_books} \n PORTFOLIO: {portfolio_context}
@@ -388,7 +395,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
                     if "[CRITICAL_DATA_BLOCK]" in fund_context:
-                        error_msg = f"⚠️ **Kritická chyba:** API servery (FMP i Yahoo) momentálně nevrací data pro `{fund_ticker}`. Analýza zastavena, aby nevznikl zkreslený výsledek bez reálných čísel."
+                        error_msg = f"⚠️ **Kritická chyba:** API servery (FMP i Yahoo) momentálně nevrací data pro `{fund_ticker}`. Zkontroluj prosím, zda tento ticker na burze skutečně existuje, nebo chvíli počkej."
                         st.markdown(error_msg)
                         st.session_state.messages.append({"role": "assistant", "content": error_msg, "hidden": False})
                     else:
