@@ -446,7 +446,8 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         1. DYNAMICKÁ VÝHYBKA: Tvá odpověď musí přesně dodržet níže uvedenou strukturu. Rozhodni, zda analyzuješ americkou firmu (disponuje 10-K) nebo zahraniční firmu (nemá 10-K formulář).
         2. POVINNÁ ČÍSLA: Přesná čísla DOSLOVA VYPIŠ do textu a přidej hluboký komentář. U "HODNOTA_NEEXISTUJE" napiš "Údaj není veřejně dostupný".
         3. GRAHAMOVO SKÓRE: MUSÍŠ doslova opsat VŠECH 5 BODŮ. Nezkracuj je!
-        4. Mluv za sebe v první osobě. Čistá čeština.
+        4. TYPOLOGIE INVESTORA (NOVÉ): Na základě volatility, ocenění, zadlužení a byznys modelu explicitně urči, pro jaký typ dlouhodobého investora se akcie hodí.
+        5. Mluv za sebe v první osobě. Čistá čeština.
         
         ŠABLONA ODPOVĚDI (DODRŽUJ PŘESNĚ):
         
@@ -468,9 +469,16 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         ### Lokální výroční zprávy a hovory s akcionáři
         [Vytěž rizika a strategii z dodaných dat z webu a z hovoru managementu z FMP.]
 
-        [VŽDY VLOŽ TENTO NADPIS:]
+        [VŽDY VLOŽ TYTO TŘI ZBÝVAJÍCÍ NADPISY:]
         ### Syntéza tří světů (Křížová kontrola)
         [Zde propoj všechny 3 zdroje: 1) Historická tvrdá data z 10-K či lokálních zpráv, 2) Data z hovoru s investory (FMP), 3) Aktuální zprávy z webu (DuckDuckGo). Analyzuj jejich shody či rozpory a ukaž, kam firma reálně směřuje.]
+
+        ### Typologie investora a vhodnost do portfolia
+        [Zde urči, pro jakého dlouhodobého investora je akcie ideální. Rozděl to jasně na:
+        - Profil investora: (např. Konzervativní, Růstový, Hodnotový, Spekulativní).
+        - Investiční horizont: (např. 5+ let, 10+ let).
+        - Role v portfoliu: Zda by měla tvořit defenzivní jádro portfolia, dynamickou část (tzv. satelit), nebo zda jde o dividendovou dojnici.
+        Vysvětli tvé rozhodnutí na základě zjištěného rizika a fundamentů z předchozích bodů.]
 
         ### Celkové shrnutí a závěr
         [Jasný a nekompromisní závěr pro investora, shrň hlavní rizika a výhody.]
@@ -510,7 +518,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                     DATA Z WEBU (DuckDuckGo):
                     {web_data}
                     
-                    Nyní máš všechna data. Pamatuj, tvůj text musí mít jasnou strukturu. U 4. nadpisu si vyber variantu podle toho, zda je to americká nebo zahraniční firma. Sekci "Syntéza tří světů" udělej co nejvíce analytickou!"""
+                    Nyní máš všechna data. Pamatuj, tvůj text musí mít jasnou strukturu. Důraz kladen na sekci "Typologie investora" - jasně urči rizikový profil a roli v portfoliu!"""
                     
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
