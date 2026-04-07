@@ -41,16 +41,6 @@ def get_model():
 
 model = get_model()
 
-# --- 2.5 KAMUFLÁŽ PRO YAHOO FINANCE (USER-AGENT) ---
-def get_yf_session():
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5"
-    })
-    return session
-
 # --- 3. NAČTENÍ DAT Z GOOGLE SHEETS (Skrytě) ---
 SHEET_ID = "1gAp2_XHEiNzQB7uODtcK2FmLrEXFm2yQ0wPNo6sJTds"
 
@@ -71,10 +61,10 @@ except Exception:
 # --- 4. FUNKCE PRO VYKRESLENÍ A ANALÝZU GRAFU ---
 def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
     stats_summary = None 
-    session = get_yf_session()
     try:
         with st.spinner(f"Vykresluji graf pro {ticker_symbol}..."):
-            data = yf.download(ticker_symbol, period="max", session=session, progress=False)
+            # Nyní necháváme yfinance, ať si session řídí samo (využije curl_cffi)
+            data = yf.download(ticker_symbol, period="max", progress=False)
             if data.empty: return None
 
             y_data = data['Close'] if isinstance(data.columns, pd.MultiIndex) else data['Close']
@@ -132,16 +122,22 @@ def get_ddg_web_data(company_name):
     except Exception as e: 
         return f"Chyba při vyhledávání: {str(e)}"
 
-# --- 4.5 ROBUSTNÍ FUNDAMENTÁLNÍ DATA (FMP + YAHOO ZÁLOHA) ---
+# --- 4.5 ROBUSTNÍ FUNDAMENTÁLNÍ DATA (YAHOO JAKO HLAVNÍ ZDROJ + FMP ZÁLOHA) ---
 def get_graham_fundamentals(ticker_symbol):
     ticker = ticker_symbol.upper()
     api_error_log = ""
     try:
         quote_data = {}
-        metrics_data = {}
         yf_info = {}
         
-        # 1. Zkusit FMP (Hlavní zdroj) s diagnostikou chyb
+        # 1. Yahoo Finance (Nyní se spoléháme na vestavěnou ochranu yfinance)
+        try:
+            stock = yf.Ticker(ticker)
+            yf_info = stock.info if stock.info else {}
+        except Exception as e: 
+            api_error_log += f"Yahoo Error: {str(e)} "
+
+        # 2. FMP Quote (Základní data, která na free tieru obvykle fungují)
         try:
             q_url = f"https://financialmodelingprep.com/api/v3/quote/{ticker}?apikey={FMP_KEY}"
             q_resp = requests.get(q_url).json()
@@ -149,32 +145,18 @@ def get_graham_fundamentals(ticker_symbol):
                 api_error_log += f"FMP Error: {q_resp['Error Message']} "
             elif isinstance(q_resp, list) and q_resp: 
                 quote_data = q_resp[0]
-            
-            m_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{ticker}?apikey={FMP_KEY}"
-            m_resp = requests.get(m_url).json()
-            if isinstance(m_resp, list) and m_resp: 
-                metrics_data = m_resp[0]
         except Exception as e: 
             api_error_log += f"FMP Request Error: {str(e)} "
 
-        # 2. Zkusit Yahoo Finance (jako zálohu)
-        try:
-            session = get_yf_session()
-            stock = yf.Ticker(ticker, session=session)
-            yf_info = stock.info if stock.info else {}
-        except Exception as e: 
-            api_error_log += f"Yahoo Error: {str(e)} "
-
         # KRIZOVÝ PROTOKOL: Návrat diagnostiky, pokud vše selže
-        if not quote_data and not metrics_data and not yf_info:
+        if not quote_data and not yf_info:
             error_details = api_error_log if api_error_log else "Neznámá chyba, data jsou prázdná."
             return f"[CRITICAL_DATA_BLOCK] Diagnostika chyb: {error_details}"
 
-        # Sjednocení dat
-        def get_best_val(fmp_q_key, fmp_m_key, yf_key):
-            if fmp_q_key and quote_data.get(fmp_q_key): return quote_data.get(fmp_q_key)
-            if fmp_m_key and metrics_data.get(fmp_m_key): return metrics_data.get(fmp_m_key)
+        # Sjednocení dat (Yahoo má nyní přednost, FMP záloha)
+        def get_best_val(yf_key, fmp_q_key):
             if yf_key and yf_info.get(yf_key): return yf_info.get(yf_key)
+            if fmp_q_key and quote_data.get(fmp_q_key): return quote_data.get(fmp_q_key)
             return "HODNOTA_NEEXISTUJE"
 
         currency = yf_info.get('financialCurrency', yf_info.get('currency', 'USD')).upper()
@@ -196,20 +178,17 @@ def get_graham_fundamentals(ticker_symbol):
             try: return f"{float(val)*100:.2f} %" if float(val) < 2 else f"{float(val):.2f} %"
             except: return "HODNOTA_NEEXISTUJE"
 
-        pe_trailing = get_best_val('pe', 'peRatioTTM', 'trailingPE')
+        pe_trailing = get_best_val('trailingPE', 'pe')
         pe_forward = yf_info.get('forwardPE', "HODNOTA_NEEXISTUJE")
-        pb = get_best_val(None, 'priceToBookValueRatioTTM', 'priceToBook')
-        debt = get_best_val(None, 'totalDebtTTM', 'totalDebt')
-        cash = get_best_val(None, 'cashAndCashEquivalentsTTM', 'totalCash')
-        current_ratio = get_best_val(None, 'currentRatioTTM', 'currentRatio')
-        fcf = get_best_val(None, 'freeCashFlowYieldTTM', 'freeCashflow')
-        debt_to_equity = get_best_val(None, 'debtToEquityTTM', 'debtToEquity')
-        roe = format_pct(get_best_val(None, 'roeTTM', 'returnOnEquity'))
+        pb = get_best_val('priceToBook', None)
+        debt = get_best_val('totalDebt', None)
+        cash = get_best_val('totalCash', None)
+        current_ratio = get_best_val('currentRatio', None)
+        fcf = get_best_val('freeCashflow', None)
+        debt_to_equity = get_best_val('debtToEquity', None)
+        roe = format_pct(yf_info.get('returnOnEquity', "HODNOTA_NEEXISTUJE"))
         profit_margin = format_pct(yf_info.get('profitMargins', "HODNOTA_NEEXISTUJE"))
-        
-        div_val = metrics_data.get('dividendYieldPercentageTTM')
-        if not div_val: div_val = yf_info.get('dividendYield')
-        dividend_yield = format_pct(div_val)
+        dividend_yield = format_pct(yf_info.get('dividendYield', "HODNOTA_NEEXISTUJE"))
 
         margin_safety = "HODNOTA_NEEXISTUJE"
         net_debt_val = None
@@ -279,7 +258,7 @@ def get_graham_fundamentals(ticker_symbol):
             return f"{float(v):.2f}" if v != "HODNOTA_NEEXISTUJE" and v is not None else "HODNOTA_NEEXISTUJE"
 
         return f"""
-        [DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ (FMP + YAHOO) PRO {ticker}]
+        [DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ PRO {ticker}]
         ZÁKLADNÍ OCENĚNÍ:
         Trailing P/E: {safe_fmt(pe_trailing)}
         Forward P/E: {safe_fmt(pe_forward)}
@@ -406,10 +385,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                     
                     # DETEKCE CHYB A MĚKKÝ PROTOKOL
                     if "[CRITICAL_DATA_BLOCK]" in fund_context:
-                        # Vypíše diagnostiku uživateli
                         st.warning(f"⚠️ Živá čísla pro {fund_ticker} z burzy se nepodařilo stáhnout. \n{fund_context} \nMInBot se nyní spolehne na vyhledávání na webu (DuckDuckGo), Google Sheets a svou paměť.")
-                        
-                        # Vynutí na AI, aby i tak napsalo dlouhý text
                         fund_context = f"[UPOZORNĚNÍ PRO AI] Živá fundamentální data z burzy pro {fund_ticker} selhala. Jsi přísně instruován POKRAČOVAT v analýze podle šablony! Do sekcí s čísly napiš, že data nejsou dostupná kvůli výpadku burzovního API, ale o to více a do hloubky zanalyzuj zprávy z Webu (DuckDuckGo), paměť (Pinecone) a data ze Sledovaných/Portfolia!"
                         
                     transcript_data = get_fmp_transcript(fund_ticker)
