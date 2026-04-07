@@ -8,3 +8,4 @@ st-gsheets-connection
 pandas
 yfinance
 duckduckgo-search
+curl_cffi
