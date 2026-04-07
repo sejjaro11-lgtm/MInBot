@@ -128,7 +128,8 @@ def get_graham_fundamentals(ticker_symbol):
     ticker = ticker_symbol.upper()
     api_source = "Neznámý"
     
-    pe_trailing = pb = debt = cash = current_ratio = fcf = debt_to_equity = roe = profit_margin = dividend_yield = "HODNOTA_NEEXISTUJE"
+    # OPRAVA CHYBY: Přidáno pe_forward do výchozích proměnných!
+    pe_trailing = pe_forward = pb = debt = cash = current_ratio = fcf = debt_to_equity = roe = profit_margin = dividend_yield = "HODNOTA_NEEXISTUJE"
     currency = "USD"
     
     # KROK 1: Pokus o zisk z Yahoo Finance (Nejvíce dat, ale hrozí ban)
@@ -139,6 +140,7 @@ def get_graham_fundamentals(ticker_symbol):
             api_source = "Yahoo Finance"
             currency = yf_info.get('financialCurrency', 'USD').upper()
             pe_trailing = yf_info.get('trailingPE', "HODNOTA_NEEXISTUJE")
+            pe_forward = yf_info.get('forwardPE', "HODNOTA_NEEXISTUJE")
             pb = yf_info.get('priceToBook', "HODNOTA_NEEXISTUJE")
             debt = yf_info.get('totalDebt', "HODNOTA_NEEXISTUJE")
             cash = yf_info.get('totalCash', "HODNOTA_NEEXISTUJE")
