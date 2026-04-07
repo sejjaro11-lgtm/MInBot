@@ -27,7 +27,6 @@ try:
     PINECONE_KEY = st.secrets["PINECONE_API_KEY"]
     OPENAI_KEY = st.secrets["OPENAI_API_KEY"]
     FMP_KEY = st.secrets["FMP_API_KEY"]
-    # Alpha Vantage je volitelný, pokud chybí, nehodí chybu
     AV_KEY = st.secrets.get("ALPHA_VANTAGE_KEY") 
     pc = Pinecone(api_key=PINECONE_KEY)
     client = openai.OpenAI(api_key=OPENAI_KEY)
@@ -112,20 +111,17 @@ def get_fmp_transcript(ticker):
     except Exception as e: 
         return f"Chyba při stahování hovoru: {str(e)}"
 
-# --- 4.2 NOVÉ: FILTR DŮVĚRYHODNÝCH ZPRÁV Z WEBU (WHITELISTING) ---
+# --- 4.2 ZPRÁVY Z WEBU (DUCKDUCKGO - WHITELIST) ---
 def get_trusted_news(company_name):
     if not DDG_AVAILABLE: return "Údaj není veřejně dostupný."
     try:
-        # Seznam povolených domén
         trusted_domains = ["reuters.com", "bloomberg.com", "cnbc.com", "ft.com", "wsj.com", "finance.yahoo.com"]
-        # Vytvoření vyhledávacího dotazu s operátory OR pro konkrétní weby
         sites_query = " OR ".join([f"site:{domain}" for domain in trusted_domains])
         query = f'"{company_name}" ({sites_query})'
         
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=5))
             if results: 
-                # Vracíme nalezené titulky a popisky, aby z nich AI mohla vyčíst sentiment
                 return "\n".join([f"- [{r.get('title', '')}]({r.get('href', '')}): {r.get('body', '')}" for r in results])
             return "Na povolených důvěryhodných webech nebyly momentálně nalezeny žádné zásadní aktuální zprávy."
     except Exception as e: 
@@ -136,62 +132,91 @@ def get_graham_fundamentals(ticker_symbol):
     ticker = ticker_symbol.upper()
     api_source = "Neznámý"
     
-    pe_trailing = pe_forward = pb = debt = cash = current_ratio = fcf = debt_to_equity = roe = profit_margin = dividend_yield = "HODNOTA_NEEXISTUJE"
+    pe_trailing = pe_forward = pb = debt = cash = current_ratio = fcf = debt_to_equity = "HODNOTA_NEEXISTUJE"
     currency = "USD"
+    current_price = "HODNOTA_NEEXISTUJE"
     
-    # KROK 1: Pokus o zisk z Yahoo Finance (Nejvíce dat)
+    quote_data = {}
+    yf_info = {}
+    metrics_data = {}
+    
+    # KROK 1: Yahoo Finance
     try:
         stock = yf.Ticker(ticker)
-        yf_info = stock.info
+        yf_info = stock.info if stock.info else {}
         if yf_info and "trailingPE" in yf_info:
             api_source = "Yahoo Finance"
-            currency = yf_info.get('financialCurrency', 'USD').upper()
-            pe_trailing = yf_info.get('trailingPE', "HODNOTA_NEEXISTUJE")
-            pe_forward = yf_info.get('forwardPE', "HODNOTA_NEEXISTUJE")
-            pb = yf_info.get('priceToBook', "HODNOTA_NEEXISTUJE")
-            debt = yf_info.get('totalDebt', "HODNOTA_NEEXISTUJE")
-            cash = yf_info.get('totalCash', "HODNOTA_NEEXISTUJE")
-            current_ratio = yf_info.get('currentRatio', "HODNOTA_NEEXISTUJE")
-            fcf = yf_info.get('freeCashflow', "HODNOTA_NEEXISTUJE")
-            debt_to_equity = yf_info.get('debtToEquity', "HODNOTA_NEEXISTUJE")
-            roe = yf_info.get('returnOnEquity', "HODNOTA_NEEXISTUJE")
-            profit_margin = yf_info.get('profitMargins', "HODNOTA_NEEXISTUJE")
-            dividend_yield = yf_info.get('dividendYield', "HODNOTA_NEEXISTUJE")
-    except:
-        pass
+    except: pass
 
-    # KROK 2: Pokud Yahoo selhalo, přepínáme na Alpha Vantage (Záloha 1)
+    # KROK 2 a 3: FMP (Jako záloha nebo doplnění)
+    try:
+        q_url = f"https://financialmodelingprep.com/api/v3/quote/{ticker}?apikey={FMP_KEY}"
+        q_resp = requests.get(q_url).json()
+        if isinstance(q_resp, list) and q_resp: 
+            quote_data = q_resp[0]
+            if api_source == "Neznámý": api_source = "FMP Quote"
+            
+        m_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{ticker}?apikey={FMP_KEY}"
+        m_resp = requests.get(m_url).json()
+        if isinstance(m_resp, list) and m_resp: metrics_data = m_resp[0]
+    except: pass
+
+    # Alpha Vantage (Pokud je potřeba extra fallback)
+    av_resp = {}
     if api_source == "Neznámý" and AV_KEY:
         try:
             av_url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={AV_KEY}"
             av_resp = requests.get(av_url).json()
             if "PERatio" in av_resp and av_resp["PERatio"] != "None":
-                api_source = "Alpha Vantage (Záložní API)"
-                currency = av_resp.get('Currency', 'USD').upper()
-                pe_trailing = av_resp.get('PERatio', "HODNOTA_NEEXISTUJE")
-                pb = av_resp.get('PriceToBookRatio', "HODNOTA_NEEXISTUJE")
-                roe = av_resp.get('ReturnOnEquityTTM', "HODNOTA_NEEXISTUJE")
-                profit_margin = av_resp.get('ProfitMargin', "HODNOTA_NEEXISTUJE")
-                dividend_yield = av_resp.get('DividendYield', "HODNOTA_NEEXISTUJE")
-        except:
-            pass
+                api_source = "Alpha Vantage"
+        except: pass
 
-    # KROK 3: Pokud selhalo i Alpha Vantage, přepínáme na FMP Quote (Záloha 2)
     if api_source == "Neznámý":
-        try:
-            q_url = f"https://financialmodelingprep.com/api/v3/quote/{ticker}?apikey={FMP_KEY}"
-            q_resp = requests.get(q_url).json()
-            if isinstance(q_resp, list) and q_resp:
-                api_source = "FMP Quote (Záložní API 2)"
-                pe_trailing = q_resp[0].get('pe', "HODNOTA_NEEXISTUJE")
-        except:
-            pass
+        return "[CRITICAL_DATA_BLOCK] Kaskáda API selhala. Nelze získat aktuální čísla z burzy."
 
-    # KRIZOVÝ PROTOKOL: Pokud padly všechny 3 systémy
-    if api_source == "Neznámý":
-        return "[CRITICAL_DATA_BLOCK] Kaskáda API selhala: Yahoo blokuje, Alpha Vantage vyčerpáno, FMP nedostupné."
+    # --- BEZPEČNÉ FORMÁTOVÁNÍ (Konec chyb s procenty) ---
+    if yf_info and yf_info.get('currentPrice'):
+        currency = yf_info.get('financialCurrency', 'USD').upper()
+        current_price = f"{yf_info.get('currentPrice')} {currency}"
+    elif quote_data and quote_data.get('price'):
+        current_price = f"{quote_data.get('price')} USD"
 
-    # Formátování čísel pro výstup
+    def get_best_val(yf_key, fmp_q_key, av_key=None, m_key=None):
+        if yf_info and yf_key and yf_info.get(yf_key): return yf_info.get(yf_key)
+        if quote_data and fmp_q_key and quote_data.get(fmp_q_key): return quote_data.get(fmp_q_key)
+        if m_key and metrics_data and metrics_data.get(m_key): return metrics_data.get(m_key)
+        if av_resp and av_key and av_resp.get(av_key): return av_resp.get(av_key)
+        return "HODNOTA_NEEXISTUJE"
+
+    pe_trailing = get_best_val('trailingPE', 'pe', 'PERatio')
+    pe_forward = get_best_val('forwardPE', None)
+    pb = get_best_val('priceToBook', None, 'PriceToBookRatio', 'priceToBookValueRatioTTM')
+    debt = get_best_val('totalDebt', None, None, 'totalDebtTTM')
+    cash = get_best_val('totalCash', None, None, 'cashAndCashEquivalentsTTM')
+    current_ratio = get_best_val('currentRatio', None, None, 'currentRatioTTM')
+    fcf = get_best_val('freeCashflow', None, None, 'freeCashFlowYieldTTM')
+    debt_to_equity = get_best_val('debtToEquity', None, None, 'debtToEquityTTM')
+
+    # Oprava procent (Nyní bezpečně rozlišujeme formát zdroje)
+    roe = "HODNOTA_NEEXISTUJE"
+    if yf_info and yf_info.get('returnOnEquity') is not None:
+        roe = f"{float(yf_info.get('returnOnEquity')) * 100:.2f} %"
+    elif metrics_data and metrics_data.get('roeTTM') is not None:
+        roe = f"{float(metrics_data.get('roeTTM')) * 100:.2f} %"
+
+    profit_margin = "HODNOTA_NEEXISTUJE"
+    if yf_info and yf_info.get('profitMargins') is not None:
+        profit_margin = f"{float(yf_info.get('profitMargins')) * 100:.2f} %"
+    elif metrics_data and metrics_data.get('netProfitMarginTTM') is not None:
+        profit_margin = f"{float(metrics_data.get('netProfitMarginTTM')) * 100:.2f} %"
+
+    dividend_yield = "HODNOTA_NEEXISTUJE"
+    if yf_info and yf_info.get('dividendYield') is not None:
+        dividend_yield = f"{float(yf_info.get('dividendYield')) * 100:.2f} %"
+    elif metrics_data and metrics_data.get('dividendYieldPercentageTTM') is not None:
+        # FMP posílá dividendu už jako procento (např. 0.41), proto NENÁSOBÍME stovkou
+        dividend_yield = f"{float(metrics_data.get('dividendYieldPercentageTTM')):.2f} %"
+
     def format_money(val):
         if val is None or val == "HODNOTA_NEEXISTUJE" or val == "": return "HODNOTA_NEEXISTUJE"
         try:
@@ -203,15 +228,6 @@ def get_graham_fundamentals(ticker_symbol):
             if abs_val >= 1e6: return f"{sign}{abs_val/1e6:.2f} mil. {currency}"
             return f"{sign}{abs_val:,.2f} {currency}"
         except: return "HODNOTA_NEEXISTUJE"
-
-    def format_pct(val):
-        if val is None or val == "HODNOTA_NEEXISTUJE" or val == "": return "HODNOTA_NEEXISTUJE"
-        try: return f"{float(val)*100:.2f} %" if float(val) < 2 else f"{float(val):.2f} %"
-        except: return "HODNOTA_NEEXISTUJE"
-
-    roe_fmt = format_pct(roe) if roe != "HODNOTA_NEEXISTUJE" else "HODNOTA_NEEXISTUJE"
-    profit_margin_fmt = format_pct(profit_margin) if profit_margin != "HODNOTA_NEEXISTUJE" else "HODNOTA_NEEXISTUJE"
-    dividend_yield_fmt = format_pct(dividend_yield) if dividend_yield != "HODNOTA_NEEXISTUJE" else "HODNOTA_NEEXISTUJE"
 
     margin_safety = "HODNOTA_NEEXISTUJE"
     if debt != "HODNOTA_NEEXISTUJE" and cash != "HODNOTA_NEEXISTUJE":
@@ -280,13 +296,15 @@ def get_graham_fundamentals(ticker_symbol):
 
     return f"""
     [DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ ({api_source}) PRO {ticker}]
+    Aktuální cena akcie: {current_price}
+    
     ZÁKLADNÍ OCENĚNÍ:
     Trailing P/E: {safe_fmt(pe_trailing)}
     Forward P/E: {safe_fmt(pe_forward)}
     P/B Ratio: {safe_fmt(pb)}
-    ROE: {roe_fmt}
-    Zisková marže: {profit_margin_fmt}
-    Dividendový výnos: {dividend_yield_fmt}
+    ROE: {roe}
+    Zisková marže: {profit_margin}
+    Dividendový výnos: {dividend_yield}
     
     ROZVAHA A HOTOVOST:
     Hotovost: {format_money(cash)}
@@ -353,17 +371,19 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         ZNALOSTI Z REPORTŮ A KNIH (Pinecone): {context_books} \n PORTFOLIO A SLEDOVANÉ (Google Sheets): {portfolio_context}
         
         TVŮJ ÚKOL:
-        Vypracuj naprosto detailní, hlubokou analýzu na základě dodaných dat z burzy, důvěryhodného webu a hovorů.
+        Odpovídej na dotazy uživatele s naprostou přesností.
         
         TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA PRO TEXT A STRUKTURU:
-        1. ABSOLUTNÍ ZÁKAZ STRUČNOSTI: NESMÍŠ zkrátit analýzu! Každou sekci rozepiš do hloubky.
-        2. PŘEHLEDNÉ ODRÁŽKY: V sekcích "Základní ocenění" a "Rozvaha a hotovost" MUSÍŠ vždy nejprve vypsat obdržená data formou odrážek. Pod odrážkami napiš analytický komentář.
-        3. GRAHAMOVO SKÓRE: Z dodaných dat MUSÍŠ doslova opsat VŠECH 5 BODŮ. Je absolutně ZAKÁZÁNO odrážky slučovat nebo zkracovat! 
-        4. DYNAMICKÁ VÝHYBKA: U 4. nadpisu zvol buď 'Tvrdá data z 10-K' (americké firmy) nebo 'Lokální výroční zprávy' (zahraniční).
-        5. SENTIMENT ZPRÁV: V nové sekci 'Aktuální dění a sentiment' nesmíš fantazírovat. Vyjdi čistě z předložených zpráv (z Reuters, Bloomberg atd.) a zhodnoť, zda převládá pozitivní nebo negativní nálada.
-        6. TYPOLOGIE INVESTORA: Na konci detailně urči Profil investora, Horizont a Roli v portfoliu na základě dostupných informací.
+        1. DETEKCE ZÁMĚRU (DŮLEŽITÉ): 
+           - Pokud se uživatel ptá na JEDNODUCHOU a KONKRÉTNÍ věc (např. "jaká je aktuální cena", "jaké je P/E"), odpověz STRUČNĚ, přímo na otázku a NEPOUŽÍVEJ plnou šablonu.
+           - Pokud se uživatel ptá na "analýzu", "rozbor", nebo se ptá obecně (např. "co mi řekneš o..."), MUSÍŠ použít KOMPLETNÍ ŠABLONU níže.
+        2. ABSOLUTNÍ ZÁKAZ STRUČNOSTI U ANALÝZY: Pokud tvoříš analýzu podle šablony, NESMÍŠ zkrátit text! Každou sekci rozepiš do hloubky.
+        3. PŘEHLEDNÉ ODRÁŽKY: V sekcích "Základní ocenění" a "Rozvaha a hotovost" MUSÍŠ vždy nejprve vypsat obdržená data formou odrážek. 
+        4. GRAHAMOVO SKÓRE: Z dodaných dat MUSÍŠ doslova opsat VŠECH 5 BODŮ. Je absolutně ZAKÁZÁNO odrážky slučovat! 
+        5. DYNAMICKÁ VÝHYBKA: U 4. nadpisu zvol buď 'Tvrdá data z 10-K' (americké firmy) nebo 'Lokální výroční zprávy' (zahraniční).
+        6. SENTIMENT ZPRÁV: Vycházej čistě ze zpráv z DuckDuckGo a zhodnoť, zda převládá pozitivní nebo negativní nálada.
         
-        ŠABLONA ODPOVĚDI (DODRŽUJ PŘESNĚ):
+        ŠABLONA ODPOVĚDI (POUŽIJ POUZE PRO KOMPLEXNÍ ANALÝZU):
         
         ### Základní ocenění a rentabilita
         [Vypiš čísla do odrážek a rozepiš komentář.]
@@ -378,10 +398,10 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         [Rozepiš detailně rizika a plány.]
 
         ### Aktuální dění a sentiment na trhu
-        [Zde zanalyzuj předložené zprávy z důvěryhodných zdrojů. Zhodnoť hlavní události a to, zda je aktuální sentiment trhu býčí nebo medvědí.]
+        [Zde zanalyzuj předložené zprávy z důvěryhodných zdrojů.]
 
         ### Syntéza tří světů (Křížová kontrola)
-        [Zde detailně propoj historii, plány managementu a aktuální zprávy z webu do jednoho komplexního pohledu na budoucnost.]
+        [Propoj historii, plány managementu a aktuální zprávy z webu.]
 
         ### Typologie investora a vhodnost do portfolia
         [Detailně urči: Profil investora, Investiční horizont, Role v portfoliu.]
@@ -401,19 +421,18 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
             
             if fund_match:
                 fund_ticker = fund_match.group(1).strip().upper()
-                with st.spinner(f"Spouštím kaskádové stahování dat pro {fund_ticker}..."):
+                with st.spinner(f"Stahuji data pro {fund_ticker}..."):
                     
                     company_name = get_company_name(fund_ticker)
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
                     if "[CRITICAL_DATA_BLOCK]" in fund_context:
-                        st.warning(f"⚠️ MInBot vyčerpal celou kaskádu pro čísla. \n{fund_context} \nMInBot se nyní plně spolehne na aktuální zprávy (Reuters, Bloomberg atd.) a paměť.")
-                        fund_context = f"[UPOZORNĚNÍ PRO AI] Kaskáda API selhala. POKRAČUJ v analýze podle šablony! Do sekcí s čísly napiš, že data nejsou dostupná kvůli výpadku, ale o to více zanalyzuj zprávy z důvěryhodných webů!"
+                        fund_context = f"[UPOZORNĚNÍ PRO AI] Kaskáda API pro živá čísla selhala. POKRAČUJ v odpovědi! Pokud je dotaz obecný, použij šablonu, ale upozorni, že data chybí. O to více zanalyzuj zprávy z důvěryhodných webů!"
                         
                     transcript_data = get_fmp_transcript(fund_ticker)
-                    trusted_news_data = get_trusted_news(company_name) # Použití nového Whitelist filtru
+                    trusted_news_data = get_trusted_news(company_name)
                     
-                    hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\nHOVORY:\n{transcript_data}\nAKTUÁLNÍ ZPRÁVY (Důvěryhodné zdroje):\n{trusted_news_data}\n\nNezapomeň! NESMÍŠ zkrátit text a detailně zanalyzuj sentiment trhu podle zpráv!"
+                    hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\nHOVORY:\n{transcript_data}\nAKTUÁLNÍ ZPRÁVY:\n{trusted_news_data}\n\nNezapomeň! Pokud je dotaz jen na cenu/P/E, odpověz jednou větou. Pokud na analýzu, nepoužívej stručnost a dodrž šablonu!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
                     messages_analyst = [{"role": "system", "content": system_prompt_analyst}]
