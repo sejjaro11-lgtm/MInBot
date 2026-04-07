@@ -127,6 +127,51 @@ def get_trusted_news(company_name):
     except Exception as e: 
         return f"Chyba při vyhledávání zpráv: {str(e)}"
 
+# --- 4.3 NOVÉ: TECHNICKÁ ANALÝZA (VELKÁ TROJKA) ---
+def get_technical_data(ticker_symbol):
+    try:
+        # Stáhneme poslední rok dat pro výpočet klouzavých průměrů
+        data = yf.download(ticker_symbol, period="1y", progress=False)
+        if data.empty: return "Technická data nejsou pro tento ticker momentálně dostupná."
+
+        close = data['Close']
+        if isinstance(close, pd.DataFrame): close = close.iloc[:, 0]
+
+        current_price = close.iloc[-1]
+
+        # 1. SMA 50 a SMA 200
+        sma_50 = close.rolling(window=50).mean().iloc[-1]
+        sma_200 = close.rolling(window=200).mean().iloc[-1]
+
+        # 2. RSI (14 dnů) - Výpočet pomocí exponenciálního průměru (Wilderova metoda)
+        delta = close.diff()
+        gain = delta.clip(lower=0)
+        loss = -1 * delta.clip(upper=0)
+        ema_gain = gain.ewm(com=13, adjust=False).mean()
+        ema_loss = loss.ewm(com=13, adjust=False).mean()
+        rs = ema_gain / ema_loss
+        rsi_val = (100 - (100 / (1 + rs))).iloc[-1]
+
+        # 3. MACD
+        exp1 = close.ewm(span=12, adjust=False).mean()
+        exp2 = close.ewm(span=26, adjust=False).mean()
+        macd = exp1 - exp2
+        signal = macd.ewm(span=9, adjust=False).mean()
+        macd_hist = (macd - signal).iloc[-1]
+
+        def fmt(val): return f"{val:.2f}" if not pd.isna(val) else "Nedostatek dat"
+
+        return f"""
+        TECHNICKÁ ANALÝZA (Aktuální hodnoty k dnešnímu dni):
+        Aktuální cena: {fmt(current_price)} USD
+        SMA 50 (Krátkodobý trend): {fmt(sma_50)}
+        SMA 200 (Dlouhodobý trend): {fmt(sma_200)}
+        RSI 14 (Momentum): {fmt(rsi_val)} (Info: pod 30 = přeprodáno, nad 70 = překoupeno)
+        MACD Histogram: {fmt(macd_hist)} (Info: kladný = býčí momentum, záporný = medvědí)
+        """
+    except Exception as e:
+        return f"Chyba při výpočtu technické analýzy: {str(e)}"
+
 # --- 4.5 KASKÁDOVÁ FUNDAMENTÁLNÍ DATA (Yahoo -> Alpha Vantage -> FMP) ---
 def get_graham_fundamentals(ticker_symbol):
     ticker = ticker_symbol.upper()
@@ -376,13 +421,11 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
            - Pokud se uživatel ptá na JEDNODUCHOU a KONKRÉTNÍ věc (např. "jaká je aktuální cena", "jaké je P/E"), odpověz STRUČNĚ, přímo na otázku a NEPOUŽÍVEJ plnou šablonu.
            - Pokud se uživatel ptá na "analýzu", "rozbor", nebo se ptá obecně (např. "co mi řekneš o..."), MUSÍŠ použít KOMPLETNÍ ŠABLONU níže.
         2. VYKRESLOVÁNÍ GRAFŮ (NEZBYTNÉ): Máš zabudovaný nástroj na tvorbu interaktivních grafů! Pokud tě uživatel požádá o vykreslení grafu (jakékoliv akcie), MUSÍŠ kamkoliv do své odpovědi vložit tuto přesnou tajnou značku: [[GRAF: TICKER | ROK_OD | ROK_DO]].
-           Příklad 1: "udělej mi graf vývoje ceny applu od roku 2007 - 2021" -> ty odpovíš a někam do textu vložíš [[GRAF: AAPL | 2007 | 2021]].
-           Příklad 2: "Ukaž mi graf Mety" -> vložíš [[GRAF: META | | ]].
         3. ABSOLUTNÍ ZÁKAZ STRUČNOSTI U ANALÝZY: Pokud tvoříš analýzu podle šablony, NESMÍŠ zkrátit text! Každou sekci rozepiš do hloubky.
-        4. PŘEHLEDNÉ ODRÁŽKY: V sekcích "Základní ocenění" a "Rozvaha a hotovost" MUSÍŠ vždy nejprve vypsat obdržená data formou odrážek. 
-        5. GRAHAMOVO SKÓRE: Z dodaných dat MUSÍŠ doslova opsat VŠECH 5 BODŮ. Je absolutně ZAKÁZÁNO odrážky slučovat! 
-        6. DYNAMICKÁ VÝHYBKA: U 4. nadpisu zvol buď 'Tvrdá data z 10-K' (americké firmy) nebo 'Lokální výroční zprávy' (zahraniční).
-        7. SENTIMENT ZPRÁV: Vycházej čistě ze zpráv z DuckDuckGo a zhodnoť, zda převládá pozitivní nebo negativní nálada.
+        4. PŘEHLEDNÉ ODRÁŽKY: V sekcích "Základní ocenění", "Rozvaha a hotovost" a nově "Technická analýza a momentum" MUSÍŠ vždy nejprve vypsat obdržená data formou odrážek. 
+        5. GRAHAMOVO SKÓRE: Z dodaných dat MUSÍŠ doslova opsat VŠECH 5 BODŮ.
+        6. DYNAMICKÁ VÝHYBKA: U nadpisu zvol buď 'Tvrdá data z 10-K' nebo 'Lokální výroční zprávy'.
+        7. TECHNICKÁ ANALÝZA: V nové sekci detailně interpretuj hodnoty SMA (Zlatý kříž/Kříž smrti), RSI (překoupeno/přeprodáno) a MACD.
         
         ŠABLONA ODPOVĚDI (POUŽIJ POUZE PRO KOMPLEXNÍ ANALÝZU):
         
@@ -391,6 +434,9 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
 
         ### Rozvaha a hotovost
         [Vypiš čísla do odrážek a rozepiš komentář.]
+
+        ### Technická analýza a momentum
+        [Vypiš hodnoty SMA, RSI a MACD do odrážek. Následně detailně rozeber, co znamenají pro aktuální trend a načasování vstupu.]
 
         ### Hodnocení podle Benjamina Grahama
         [Napiš celkové skóre a VYPIŠ VŠECH 5 ODRÁŽEK.]
@@ -402,7 +448,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         [Zde zanalyzuj předložené zprávy z důvěryhodných zdrojů.]
 
         ### Syntéza tří světů (Křížová kontrola)
-        [Propoj historii, plány managementu a aktuální zprávy z webu.]
+        [Propoj historii, plány managementu, techniku a aktuální zprávy z webu.]
 
         ### Typologie investora a vhodnost do portfolia
         [Detailně urči: Profil investora, Investiční horizont, Role v portfoliu.]
@@ -428,12 +474,13 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
                     if "[CRITICAL_DATA_BLOCK]" in fund_context:
-                        fund_context = f"[UPOZORNĚNÍ PRO AI] Kaskáda API pro živá čísla selhala. POKRAČUJ v odpovědi! Pokud je dotaz obecný, použij šablonu, ale upozorni, že data chybí. O to více zanalyzuj zprávy z důvěryhodných webů!"
+                        fund_context = f"[UPOZORNĚNÍ PRO AI] Kaskáda API pro živá čísla selhala. POKRAČUJ v odpovědi! Pokud je dotaz obecný, použij šablonu, ale upozorni, že data chybí."
                         
+                    tech_data = get_technical_data(fund_ticker)
                     transcript_data = get_fmp_transcript(fund_ticker)
                     trusted_news_data = get_trusted_news(company_name)
                     
-                    hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\nHOVORY:\n{transcript_data}\nAKTUÁLNÍ ZPRÁVY:\n{trusted_news_data}\n\nNezapomeň! Pokud je dotaz jen na cenu/P/E, odpověz jednou větou. Pokud na analýzu, nepoužívej stručnost a dodrž šablonu! A pokud uživatel chce graf, použij značku [[GRAF: TICKER | OD | DO]]!"
+                    hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\n{tech_data}\nHOVORY:\n{transcript_data}\nAKTUÁLNÍ ZPRÁVY:\n{trusted_news_data}\n\nNezapomeň! Pokud je dotaz jen na cenu/P/E, odpověz jednou větou. Pokud na analýzu, nepoužívej stručnost a dodrž šablonu! A pokud uživatel chce graf, použij značku [[GRAF: TICKER | OD | DO]]!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
                     messages_analyst = [{"role": "system", "content": system_prompt_analyst}]
