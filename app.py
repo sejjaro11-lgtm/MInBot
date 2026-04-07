@@ -27,6 +27,8 @@ try:
     PINECONE_KEY = st.secrets["PINECONE_API_KEY"]
     OPENAI_KEY = st.secrets["OPENAI_API_KEY"]
     FMP_KEY = st.secrets["FMP_API_KEY"]
+    # Alpha Vantage je volitelný, pokud chybí, nehodí chybu
+    AV_KEY = st.secrets.get("ALPHA_VANTAGE_KEY") 
     pc = Pinecone(api_key=PINECONE_KEY)
     client = openai.OpenAI(api_key=OPENAI_KEY)
     index_name = "minbot-index"
@@ -63,7 +65,6 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
     stats_summary = None 
     try:
         with st.spinner(f"Vykresluji graf pro {ticker_symbol}..."):
-            # Nyní necháváme yfinance, ať si session řídí samo (využije curl_cffi)
             data = yf.download(ticker_symbol, period="max", progress=False)
             if data.empty: return None
 
@@ -122,164 +123,174 @@ def get_ddg_web_data(company_name):
     except Exception as e: 
         return f"Chyba při vyhledávání: {str(e)}"
 
-# --- 4.5 ROBUSTNÍ FUNDAMENTÁLNÍ DATA (YAHOO JAKO HLAVNÍ ZDROJ + FMP ZÁLOHA) ---
+# --- 4.5 KASKÁDOVÁ FUNDAMENTÁLNÍ DATA (Yahoo -> Alpha Vantage -> FMP) ---
 def get_graham_fundamentals(ticker_symbol):
     ticker = ticker_symbol.upper()
-    api_error_log = ""
+    api_source = "Neznámý"
+    
+    pe_trailing = pb = debt = cash = current_ratio = fcf = debt_to_equity = roe = profit_margin = dividend_yield = "HODNOTA_NEEXISTUJE"
+    currency = "USD"
+    
+    # KROK 1: Pokus o zisk z Yahoo Finance (Nejvíce dat, ale hrozí ban)
     try:
-        quote_data = {}
-        yf_info = {}
-        
-        # 1. Yahoo Finance (Nyní se spoléháme na vestavěnou ochranu yfinance)
-        try:
-            stock = yf.Ticker(ticker)
-            yf_info = stock.info if stock.info else {}
-        except Exception as e: 
-            api_error_log += f"Yahoo Error: {str(e)} "
+        stock = yf.Ticker(ticker)
+        yf_info = stock.info
+        if yf_info and "trailingPE" in yf_info:
+            api_source = "Yahoo Finance"
+            currency = yf_info.get('financialCurrency', 'USD').upper()
+            pe_trailing = yf_info.get('trailingPE', "HODNOTA_NEEXISTUJE")
+            pb = yf_info.get('priceToBook', "HODNOTA_NEEXISTUJE")
+            debt = yf_info.get('totalDebt', "HODNOTA_NEEXISTUJE")
+            cash = yf_info.get('totalCash', "HODNOTA_NEEXISTUJE")
+            current_ratio = yf_info.get('currentRatio', "HODNOTA_NEEXISTUJE")
+            fcf = yf_info.get('freeCashflow', "HODNOTA_NEEXISTUJE")
+            debt_to_equity = yf_info.get('debtToEquity', "HODNOTA_NEEXISTUJE")
+            roe = yf_info.get('returnOnEquity', "HODNOTA_NEEXISTUJE")
+            profit_margin = yf_info.get('profitMargins', "HODNOTA_NEEXISTUJE")
+            dividend_yield = yf_info.get('dividendYield', "HODNOTA_NEEXISTUJE")
+    except:
+        pass
 
-        # 2. FMP Quote (Základní data, která na free tieru obvykle fungují)
+    # KROK 2: Pokud Yahoo selhalo, přepínáme na Alpha Vantage (Záloha 1)
+    if api_source == "Neznámý" and AV_KEY:
+        try:
+            av_url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={AV_KEY}"
+            av_resp = requests.get(av_url).json()
+            if "PERatio" in av_resp and av_resp["PERatio"] != "None":
+                api_source = "Alpha Vantage (Záložní API)"
+                currency = av_resp.get('Currency', 'USD').upper()
+                pe_trailing = av_resp.get('PERatio', "HODNOTA_NEEXISTUJE")
+                pb = av_resp.get('PriceToBookRatio', "HODNOTA_NEEXISTUJE")
+                roe = av_resp.get('ReturnOnEquityTTM', "HODNOTA_NEEXISTUJE")
+                profit_margin = av_resp.get('ProfitMargin', "HODNOTA_NEEXISTUJE")
+                dividend_yield = av_resp.get('DividendYield', "HODNOTA_NEEXISTUJE")
+                # Alpha Vantage Overview nedává dluh a hotovost, proto zůstanou HODNOTA_NEEXISTUJE
+        except:
+            pass
+
+    # KROK 3: Pokud selhalo i Alpha Vantage, přepínáme na FMP Quote (Záloha 2)
+    if api_source == "Neznámý":
         try:
             q_url = f"https://financialmodelingprep.com/api/v3/quote/{ticker}?apikey={FMP_KEY}"
             q_resp = requests.get(q_url).json()
-            if isinstance(q_resp, dict) and "Error Message" in q_resp:
-                api_error_log += f"FMP Error: {q_resp['Error Message']} "
-            elif isinstance(q_resp, list) and q_resp: 
-                quote_data = q_resp[0]
-        except Exception as e: 
-            api_error_log += f"FMP Request Error: {str(e)} "
+            if isinstance(q_resp, list) and q_resp:
+                api_source = "FMP Quote (Záložní API 2)"
+                pe_trailing = q_resp[0].get('pe', "HODNOTA_NEEXISTUJE")
+        except:
+            pass
 
-        # KRIZOVÝ PROTOKOL: Návrat diagnostiky, pokud vše selže
-        if not quote_data and not yf_info:
-            error_details = api_error_log if api_error_log else "Neznámá chyba, data jsou prázdná."
-            return f"[CRITICAL_DATA_BLOCK] Diagnostika chyb: {error_details}"
+    # KRIZOVÝ PROTOKOL: Pokud padly všechny 3 systémy
+    if api_source == "Neznámý":
+        return "[CRITICAL_DATA_BLOCK] Kaskáda selhala: Yahoo blokuje, Alpha Vantage nemá limit, FMP mlčí."
 
-        # Sjednocení dat (Yahoo má nyní přednost, FMP záloha)
-        def get_best_val(yf_key, fmp_q_key):
-            if yf_key and yf_info.get(yf_key): return yf_info.get(yf_key)
-            if fmp_q_key and quote_data.get(fmp_q_key): return quote_data.get(fmp_q_key)
-            return "HODNOTA_NEEXISTUJE"
-
-        currency = yf_info.get('financialCurrency', yf_info.get('currency', 'USD')).upper()
-        
-        def format_money(val):
-            if val is None or val == "HODNOTA_NEEXISTUJE" or val == "": return "HODNOTA_NEEXISTUJE"
-            try:
-                val_float = float(val)
-                sign = "-" if val_float < 0 else ""
-                abs_val = abs(val_float)
-                if abs_val >= 1e12: return f"{sign}{abs_val/1e12:.2f} bil. {currency}"
-                if abs_val >= 1e9: return f"{sign}{abs_val/1e9:.2f} mld. {currency}"
-                if abs_val >= 1e6: return f"{sign}{abs_val/1e6:.2f} mil. {currency}"
-                return f"{sign}{abs_val:,.2f} {currency}"
-            except: return "HODNOTA_NEEXISTUJE"
-
-        def format_pct(val):
-            if val is None or val == "HODNOTA_NEEXISTUJE" or val == "": return "HODNOTA_NEEXISTUJE"
-            try: return f"{float(val)*100:.2f} %" if float(val) < 2 else f"{float(val):.2f} %"
-            except: return "HODNOTA_NEEXISTUJE"
-
-        pe_trailing = get_best_val('trailingPE', 'pe')
-        pe_forward = yf_info.get('forwardPE', "HODNOTA_NEEXISTUJE")
-        pb = get_best_val('priceToBook', None)
-        debt = get_best_val('totalDebt', None)
-        cash = get_best_val('totalCash', None)
-        current_ratio = get_best_val('currentRatio', None)
-        fcf = get_best_val('freeCashflow', None)
-        debt_to_equity = get_best_val('debtToEquity', None)
-        roe = format_pct(yf_info.get('returnOnEquity', "HODNOTA_NEEXISTUJE"))
-        profit_margin = format_pct(yf_info.get('profitMargins', "HODNOTA_NEEXISTUJE"))
-        dividend_yield = format_pct(yf_info.get('dividendYield', "HODNOTA_NEEXISTUJE"))
-
-        margin_safety = "HODNOTA_NEEXISTUJE"
-        net_debt_val = None
-        if debt != "HODNOTA_NEEXISTUJE" and cash != "HODNOTA_NEEXISTUJE":
-            try:
-                net_debt_val = float(debt) - float(cash)
-                margin_safety = format_money(net_debt_val)
-            except: pass
-
-        # GRAHAMŮV SKÓROVACÍ SYSTÉM
-        graham_score = 0
-        graham_eval = []
-
-        pe_float = None
+    # Formátování čísel pro výstup
+    def format_money(val):
+        if val is None or val == "HODNOTA_NEEXISTUJE" or val == "": return "HODNOTA_NEEXISTUJE"
         try:
-            pe_float = float(pe_trailing)
-            if 0 < pe_float <= 15:
+            val_float = float(val)
+            sign = "-" if val_float < 0 else ""
+            abs_val = abs(val_float)
+            if abs_val >= 1e12: return f"{sign}{abs_val/1e12:.2f} bil. {currency}"
+            if abs_val >= 1e9: return f"{sign}{abs_val/1e9:.2f} mld. {currency}"
+            if abs_val >= 1e6: return f"{sign}{abs_val/1e6:.2f} mil. {currency}"
+            return f"{sign}{abs_val:,.2f} {currency}"
+        except: return "HODNOTA_NEEXISTUJE"
+
+    def format_pct(val):
+        if val is None or val == "HODNOTA_NEEXISTUJE" or val == "": return "HODNOTA_NEEXISTUJE"
+        try: return f"{float(val)*100:.2f} %" if float(val) < 2 else f"{float(val):.2f} %"
+        except: return "HODNOTA_NEEXISTUJE"
+
+    roe_fmt = format_pct(roe) if roe != "HODNOTA_NEEXISTUJE" else "HODNOTA_NEEXISTUJE"
+    profit_margin_fmt = format_pct(profit_margin) if profit_margin != "HODNOTA_NEEXISTUJE" else "HODNOTA_NEEXISTUJE"
+    dividend_yield_fmt = format_pct(dividend_yield) if dividend_yield != "HODNOTA_NEEXISTUJE" else "HODNOTA_NEEXISTUJE"
+
+    margin_safety = "HODNOTA_NEEXISTUJE"
+    if debt != "HODNOTA_NEEXISTUJE" and cash != "HODNOTA_NEEXISTUJE":
+        try: margin_safety = format_money(float(debt) - float(cash))
+        except: pass
+
+    # GRAHAMŮV SKÓROVACÍ SYSTÉM
+    graham_score = 0
+    graham_eval = []
+
+    pe_float = None
+    try:
+        pe_float = float(pe_trailing)
+        if 0 < pe_float <= 15:
+            graham_score += 1
+            graham_eval.append(f"- ✅ Trailing P/E je {pe_float:.2f} (pod limitem 15)")
+        elif pe_float <= 0:
+            graham_eval.append(f"- ❌ Trailing P/E je {pe_float:.2f} (společnost negeneruje zisk)")
+        else:
+            graham_eval.append(f"- ❌ Trailing P/E je {pe_float:.2f} (nad limitem 15, cena odráží budoucí růst)")
+    except: graham_eval.append("- ❌ Trailing P/E chybí (nelze určit)")
+
+    pb_float = None
+    try:
+        pb_float = float(pb)
+        if 0 < pb_float <= 1.5:
+            graham_score += 1
+            graham_eval.append(f"- ✅ P/B je {pb_float:.2f} (pod limitem 1.5)")
+        else:
+            graham_eval.append(f"- ❌ P/B je {pb_float:.2f} (nad limitem 1.5, trh žádá prémii)")
+    except: graham_eval.append("- ❌ P/B chybí (nelze určit)")
+
+    try:
+        if pe_float and pb_float:
+            graham_num = pe_float * pb_float
+            if graham_num <= 22.5 and pe_float > 0:
                 graham_score += 1
-                graham_eval.append(f"- ✅ Trailing P/E je {pe_float:.2f} (pod limitem 15)")
-            elif pe_float <= 0:
-                graham_eval.append(f"- ❌ Trailing P/E je {pe_float:.2f} (společnost negeneruje zisk)")
+                graham_eval.append(f"- ✅ Grahamovo číslo je {graham_num:.2f} (limit do 22.5 splněn)")
             else:
-                graham_eval.append(f"- ❌ Trailing P/E je {pe_float:.2f} (nad limitem 15, cena odráží budoucí růst)")
-        except: graham_eval.append("- ❌ Trailing P/E chybí (nelze určit)")
+                graham_eval.append(f"- ❌ Grahamovo číslo je {graham_num:.2f} (limit nad 22.5 překročen)")
+        else: graham_eval.append("- ❌ Nelze spočítat Grahamovo číslo (chybí data)")
+    except: graham_eval.append("- ❌ Nelze spočítat Grahamovo číslo")
 
-        pb_float = None
+    try:
+        cr_float = float(current_ratio)
+        if cr_float >= 2.0:
+            graham_score += 1
+            graham_eval.append(f"- ✅ Běžná likvidita je {cr_float:.2f} (limit nad 2.0 splněn)")
+        else:
+            graham_eval.append(f"- ❌ Běžná likvidita je {cr_float:.2f} (pod limitem 2.0)")
+    except: graham_eval.append("- ❌ Běžná likvidita chybí (nelze určit)")
+
+    if debt != "HODNOTA_NEEXISTUJE" and cash != "HODNOTA_NEEXISTUJE":
         try:
-            pb_float = float(pb)
-            if 0 < pb_float <= 1.5:
-                graham_score += 1
-                graham_eval.append(f"- ✅ P/B je {pb_float:.2f} (pod limitem 1.5)")
-            else:
-                graham_eval.append(f"- ❌ P/B je {pb_float:.2f} (nad limitem 1.5, trh žádá prémii)")
-        except: graham_eval.append("- ❌ P/B chybí (nelze určit)")
-
-        try:
-            if pe_float and pb_float:
-                graham_num = pe_float * pb_float
-                if graham_num <= 22.5 and pe_float > 0:
-                    graham_score += 1
-                    graham_eval.append(f"- ✅ Grahamovo číslo je {graham_num:.2f} (limit do 22.5 splněn)")
-                else:
-                    graham_eval.append(f"- ❌ Grahamovo číslo je {graham_num:.2f} (limit nad 22.5 překročen)")
-            else: graham_eval.append("- ❌ Nelze spočítat Grahamovo číslo (chybí data)")
-        except: graham_eval.append("- ❌ Nelze spočítat Grahamovo číslo")
-
-        try:
-            cr_float = float(current_ratio)
-            if cr_float >= 2.0:
-                graham_score += 1
-                graham_eval.append(f"- ✅ Běžná likvidita je {cr_float:.2f} (limit nad 2.0 splněn)")
-            else:
-                graham_eval.append(f"- ❌ Běžná likvidita je {cr_float:.2f} (pod limitem 2.0)")
-        except: graham_eval.append("- ❌ Běžná likvidita chybí (nelze určit)")
-
-        if net_debt_val is not None:
-            if net_debt_val < 0:
+            if (float(debt) - float(cash)) < 0:
                 graham_score += 1
                 graham_eval.append("- ✅ Více hotovosti než celkového dluhu (excelentní finanční polštář)")
             else:
                 graham_eval.append("- ❌ Celkový dluh převyšuje dostupnou hotovost")
-        else: graham_eval.append("- ❌ Nelze porovnat dluh a hotovost (chybí data)")
+        except: graham_eval.append("- ❌ Nelze porovnat dluh a hotovost")
+    else: graham_eval.append("- ❌ Nelze porovnat dluh a hotovost (chybí data)")
 
-        graham_text = "\n".join(graham_eval)
-        
-        def safe_fmt(v): 
-            return f"{float(v):.2f}" if v != "HODNOTA_NEEXISTUJE" and v is not None else "HODNOTA_NEEXISTUJE"
+    graham_text = "\n".join(graham_eval)
+    
+    def safe_fmt(v): return f"{float(v):.2f}" if v != "HODNOTA_NEEXISTUJE" and v is not None else "HODNOTA_NEEXISTUJE"
 
-        return f"""
-        [DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ PRO {ticker}]
-        ZÁKLADNÍ OCENĚNÍ:
-        Trailing P/E: {safe_fmt(pe_trailing)}
-        Forward P/E: {safe_fmt(pe_forward)}
-        P/B Ratio: {safe_fmt(pb)}
-        ROE: {roe}
-        Zisková marže: {profit_margin}
-        Dividendový výnos: {dividend_yield}
-        
-        ROZVAHA A HOTOVOST:
-        Hotovost: {format_money(cash)}
-        Celkový dluh: {format_money(debt)}
-        Čistý dluh: {margin_safety}
-        Current Ratio: {safe_fmt(current_ratio)}
-        Debt-to-Equity: {safe_fmt(debt_to_equity)}
-        Volné cash flow: {format_money(fcf)}
-        
-        TVRDÉ FAKTA - GRAHAMOVO SKÓRE: {graham_score}/5
-        {graham_text}
-        """
-    except Exception as e:
-        return f"[CHYBA] Selhání při stahování dat: {str(e)}"
+    return f"""
+    [DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ ({api_source}) PRO {ticker}]
+    ZÁKLADNÍ OCENĚNÍ:
+    Trailing P/E: {safe_fmt(pe_trailing)}
+    Forward P/E: {safe_fmt(pe_forward)}
+    P/B Ratio: {safe_fmt(pb)}
+    ROE: {roe_fmt}
+    Zisková marže: {profit_margin_fmt}
+    Dividendový výnos: {dividend_yield_fmt}
+    
+    ROZVAHA A HOTOVOST:
+    Hotovost: {format_money(cash)}
+    Celkový dluh: {format_money(debt)}
+    Čistý dluh: {margin_safety}
+    Current Ratio: {safe_fmt(current_ratio)}
+    Debt-to-Equity: {safe_fmt(debt_to_equity)}
+    Volné cash flow: {format_money(fcf)}
+    
+    TVRDÉ FAKTA - GRAHAMOVO SKÓRE: {graham_score}/5
+    {graham_text}
+    """
 
 # --- 5. FUNKCE PRO UČENÍ (PDF) ---
 def index_documents():
@@ -341,7 +352,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         2. PŘEHLEDNÉ ODRÁŽKY: V sekcích "Základní ocenění" a "Rozvaha a hotovost" MUSÍŠ vždy nejprve vypsat obdržená data formou odrážek. Pokud data nemáš, vypiš do odrážek "Data momentálně nedostupná". Pod odrážkami napiš analytický komentář.
         3. GRAHAMOVO SKÓRE: Z dodaných dat MUSÍŠ doslova opsat VŠECH 5 BODŮ. Je absolutně ZAKÁZÁNO odrážky slučovat nebo zkracovat! Pokud data nemáš, vysvětli proč Grahama nelze spočítat.
         4. DYNAMICKÁ VÝHYBKA: U 4. nadpisu zvol buď 'Tvrdá data z 10-K' (americké firmy) nebo 'Lokální výroční zprávy' (zahraniční).
-        5. TYPOLOGIE INVESTORA: Na konci detailně urči Profil investora, Horizont a Roli v portfoliu na základě dostupných informací (byť by byly jen z webu a Google Sheets).
+        5. TYPOLOGIE INVESTORA: Na konci detailně urči Profil investora, Horizont a Roli v portfoliu na základě dostupných informací.
         
         ŠABLONA ODPOVĚDI (DODRŽUJ PŘESNĚ BEZ OHLEDU NA TO, JESTLI MÁŠ ČÍSLA NEBO NE):
         
@@ -378,20 +389,19 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
             
             if fund_match:
                 fund_ticker = fund_match.group(1).strip().upper()
-                with st.spinner(f"Stahuji data pro {fund_ticker} z FMP i Yahoo..."):
+                with st.spinner(f"Spouštím kaskádové stahování dat pro {fund_ticker}..."):
                     
                     company_name = get_company_name(fund_ticker)
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
-                    # DETEKCE CHYB A MĚKKÝ PROTOKOL
                     if "[CRITICAL_DATA_BLOCK]" in fund_context:
-                        st.warning(f"⚠️ Živá čísla pro {fund_ticker} z burzy se nepodařilo stáhnout. \n{fund_context} \nMInBot se nyní spolehne na vyhledávání na webu (DuckDuckGo), Google Sheets a svou paměť.")
-                        fund_context = f"[UPOZORNĚNÍ PRO AI] Živá fundamentální data z burzy pro {fund_ticker} selhala. Jsi přísně instruován POKRAČOVAT v analýze podle šablony! Do sekcí s čísly napiš, že data nejsou dostupná kvůli výpadku burzovního API, ale o to více a do hloubky zanalyzuj zprávy z Webu (DuckDuckGo), paměť (Pinecone) a data ze Sledovaných/Portfolia!"
+                        st.warning(f"⚠️ MInBot vyčerpal celou kaskádu (Yahoo blokuje, Alpha Vantage nemá limit/chybí klíč, FMP mlčí). \n{fund_context} \nMInBot se nyní spolehne na web a paměť.")
+                        fund_context = f"[UPOZORNĚNÍ PRO AI] Kaskáda API selhala. POKRAČUJ v analýze podle šablony! Do sekcí s čísly napiš, že data nejsou dostupná kvůli výpadku burzovního API, ale o to více zanalyzuj web a hovory!"
                         
                     transcript_data = get_fmp_transcript(fund_ticker)
                     web_data = get_ddg_web_data(company_name)
                     
-                    hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\nHOVORY:\n{transcript_data}\nWEB:\n{web_data}\n\nNezapomeň! I když chybí čísla, NESMÍŠ zkrátit text! Vypiš všechny nadpisy a detailně analyzuj web a hovory!"
+                    hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\nHOVORY:\n{transcript_data}\nWEB:\n{web_data}\n\nNezapomeň! I když chybí čísla, NESMÍŠ zkrátit text!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
                     messages_analyst = [{"role": "system", "content": system_prompt_analyst}]
