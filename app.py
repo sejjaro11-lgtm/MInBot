@@ -120,17 +120,16 @@ def get_trusted_news(company_name):
         query = f'"{company_name}" ({sites_query})'
         
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=5))
+            results = list(ddgs.text(query, max_results=4))
             if results: 
                 return "\n".join([f"- [{r.get('title', '')}]({r.get('href', '')}): {r.get('body', '')}" for r in results])
-            return "Na povolených důvěryhodných webech nebyly momentálně nalezeny žádné zásadní aktuální zprávy."
+            return "Na povolených důvěryhodných webech nebyly momentálně nalezeny žádné zásadní zprávy."
     except Exception as e: 
         return f"Chyba při vyhledávání zpráv: {str(e)}"
 
-# --- 4.3 NOVÉ: TECHNICKÁ ANALÝZA (VELKÁ TROJKA) ---
+# --- 4.3 TECHNICKÁ ANALÝZA (VELKÁ TROJKA) ---
 def get_technical_data(ticker_symbol):
     try:
-        # Stáhneme poslední rok dat pro výpočet klouzavých průměrů
         data = yf.download(ticker_symbol, period="1y", progress=False)
         if data.empty: return "Technická data nejsou pro tento ticker momentálně dostupná."
 
@@ -138,12 +137,9 @@ def get_technical_data(ticker_symbol):
         if isinstance(close, pd.DataFrame): close = close.iloc[:, 0]
 
         current_price = close.iloc[-1]
-
-        # 1. SMA 50 a SMA 200
         sma_50 = close.rolling(window=50).mean().iloc[-1]
         sma_200 = close.rolling(window=200).mean().iloc[-1]
 
-        # 2. RSI (14 dnů) - Výpočet pomocí exponenciálního průměru (Wilderova metoda)
         delta = close.diff()
         gain = delta.clip(lower=0)
         loss = -1 * delta.clip(upper=0)
@@ -152,7 +148,6 @@ def get_technical_data(ticker_symbol):
         rs = ema_gain / ema_loss
         rsi_val = (100 - (100 / (1 + rs))).iloc[-1]
 
-        # 3. MACD
         exp1 = close.ewm(span=12, adjust=False).mean()
         exp2 = close.ewm(span=26, adjust=False).mean()
         macd = exp1 - exp2
@@ -166,17 +161,30 @@ def get_technical_data(ticker_symbol):
         Aktuální cena: {fmt(current_price)} USD
         SMA 50 (Krátkodobý trend): {fmt(sma_50)}
         SMA 200 (Dlouhodobý trend): {fmt(sma_200)}
-        RSI 14 (Momentum): {fmt(rsi_val)} (Info: pod 30 = přeprodáno, nad 70 = překoupeno)
-        MACD Histogram: {fmt(macd_hist)} (Info: kladný = býčí momentum, záporný = medvědí)
+        RSI 14 (Momentum): {fmt(rsi_val)}
+        MACD Histogram: {fmt(macd_hist)}
         """
     except Exception as e:
         return f"Chyba při výpočtu technické analýzy: {str(e)}"
+
+# --- 4.4 NOVÉ: MAKRO A SOCIÁLNÍ RADAR ---
+def get_social_macro_news(company_name):
+    if not DDG_AVAILABLE: return "Údaj není veřejně dostupný."
+    try:
+        # Hledáme širší kontext: virální trendy, geopolitiku, makroekonomiku bez omezení domén
+        query = f'"{company_name}" AND (trend OR viral OR macro OR geopolitics OR supply chain OR crisis)'
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=3))
+            if results:
+                return "\n".join([f"- [{r.get('title', '')}]: {r.get('body', '')}" for r in results])
+            return "Nebyly zaznamenány žádné výrazné virální trendy nebo makroekonomické otřesy."
+    except Exception as e:
+        return f"Chyba při vyhledávání makro trendů: {str(e)}"
 
 # --- 4.5 KASKÁDOVÁ FUNDAMENTÁLNÍ DATA (Yahoo -> Alpha Vantage -> FMP) ---
 def get_graham_fundamentals(ticker_symbol):
     ticker = ticker_symbol.upper()
     api_source = "Neznámý"
-    
     pe_trailing = pe_forward = pb = debt = cash = current_ratio = fcf = debt_to_equity = "HODNOTA_NEEXISTUJE"
     currency = "USD"
     current_price = "HODNOTA_NEEXISTUJE"
@@ -185,41 +193,34 @@ def get_graham_fundamentals(ticker_symbol):
     yf_info = {}
     metrics_data = {}
     
-    # KROK 1: Yahoo Finance
     try:
         stock = yf.Ticker(ticker)
         yf_info = stock.info if stock.info else {}
-        if yf_info and "trailingPE" in yf_info:
-            api_source = "Yahoo Finance"
+        if yf_info and "trailingPE" in yf_info: api_source = "Yahoo Finance"
     except: pass
 
-    # KROK 2 a 3: FMP
     try:
         q_url = f"https://financialmodelingprep.com/api/v3/quote/{ticker}?apikey={FMP_KEY}"
         q_resp = requests.get(q_url).json()
         if isinstance(q_resp, list) and q_resp: 
             quote_data = q_resp[0]
             if api_source == "Neznámý": api_source = "FMP Quote"
-            
         m_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{ticker}?apikey={FMP_KEY}"
         m_resp = requests.get(m_url).json()
         if isinstance(m_resp, list) and m_resp: metrics_data = m_resp[0]
     except: pass
 
-    # Alpha Vantage
     av_resp = {}
     if api_source == "Neznámý" and AV_KEY:
         try:
             av_url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={AV_KEY}"
             av_resp = requests.get(av_url).json()
-            if "PERatio" in av_resp and av_resp["PERatio"] != "None":
-                api_source = "Alpha Vantage"
+            if "PERatio" in av_resp and av_resp["PERatio"] != "None": api_source = "Alpha Vantage"
         except: pass
 
     if api_source == "Neznámý":
-        return "[CRITICAL_DATA_BLOCK] Kaskáda API selhala. Nelze získat aktuální čísla z burzy."
+        return "[CRITICAL_DATA_BLOCK] Kaskáda API selhala."
 
-    # Formátování čísel
     if yf_info and yf_info.get('currentPrice'):
         currency = yf_info.get('financialCurrency', 'USD').upper()
         current_price = f"{yf_info.get('currentPrice')} {currency}"
@@ -243,22 +244,16 @@ def get_graham_fundamentals(ticker_symbol):
     debt_to_equity = get_best_val('debtToEquity', None, None, 'debtToEquityTTM')
 
     roe = "HODNOTA_NEEXISTUJE"
-    if yf_info and yf_info.get('returnOnEquity') is not None:
-        roe = f"{float(yf_info.get('returnOnEquity')) * 100:.2f} %"
-    elif metrics_data and metrics_data.get('roeTTM') is not None:
-        roe = f"{float(metrics_data.get('roeTTM')) * 100:.2f} %"
+    if yf_info and yf_info.get('returnOnEquity') is not None: roe = f"{float(yf_info.get('returnOnEquity')) * 100:.2f} %"
+    elif metrics_data and metrics_data.get('roeTTM') is not None: roe = f"{float(metrics_data.get('roeTTM')) * 100:.2f} %"
 
     profit_margin = "HODNOTA_NEEXISTUJE"
-    if yf_info and yf_info.get('profitMargins') is not None:
-        profit_margin = f"{float(yf_info.get('profitMargins')) * 100:.2f} %"
-    elif metrics_data and metrics_data.get('netProfitMarginTTM') is not None:
-        profit_margin = f"{float(metrics_data.get('netProfitMarginTTM')) * 100:.2f} %"
+    if yf_info and yf_info.get('profitMargins') is not None: profit_margin = f"{float(yf_info.get('profitMargins')) * 100:.2f} %"
+    elif metrics_data and metrics_data.get('netProfitMarginTTM') is not None: profit_margin = f"{float(metrics_data.get('netProfitMarginTTM')) * 100:.2f} %"
 
     dividend_yield = "HODNOTA_NEEXISTUJE"
-    if yf_info and yf_info.get('dividendYield') is not None:
-        dividend_yield = f"{float(yf_info.get('dividendYield')) * 100:.2f} %"
-    elif metrics_data and metrics_data.get('dividendYieldPercentageTTM') is not None:
-        dividend_yield = f"{float(metrics_data.get('dividendYieldPercentageTTM')):.2f} %"
+    if yf_info and yf_info.get('dividendYield') is not None: dividend_yield = f"{float(yf_info.get('dividendYield')) * 100:.2f} %"
+    elif metrics_data and metrics_data.get('dividendYieldPercentageTTM') is not None: dividend_yield = f"{float(metrics_data.get('dividendYieldPercentageTTM')):.2f} %"
 
     def format_money(val):
         if val is None or val == "HODNOTA_NEEXISTUJE" or val == "": return "HODNOTA_NEEXISTUJE"
@@ -277,7 +272,6 @@ def get_graham_fundamentals(ticker_symbol):
         try: margin_safety = format_money(float(debt) - float(cash))
         except: pass
 
-    # GRAHAMŮV SKÓROVACÍ SYSTÉM
     graham_score = 0
     graham_eval = []
 
@@ -287,11 +281,9 @@ def get_graham_fundamentals(ticker_symbol):
         if 0 < pe_float <= 15:
             graham_score += 1
             graham_eval.append(f"- ✅ Trailing P/E je {pe_float:.2f} (pod limitem 15)")
-        elif pe_float <= 0:
-            graham_eval.append(f"- ❌ Trailing P/E je {pe_float:.2f} (společnost negeneruje zisk)")
-        else:
-            graham_eval.append(f"- ❌ Trailing P/E je {pe_float:.2f} (nad limitem 15, cena odráží budoucí růst)")
-    except: graham_eval.append("- ❌ Trailing P/E chybí (nelze určit)")
+        elif pe_float <= 0: graham_eval.append(f"- ❌ Trailing P/E je {pe_float:.2f} (firma negeneruje zisk)")
+        else: graham_eval.append(f"- ❌ Trailing P/E je {pe_float:.2f} (nad limitem 15)")
+    except: graham_eval.append("- ❌ Trailing P/E chybí")
 
     pb_float = None
     try:
@@ -299,39 +291,35 @@ def get_graham_fundamentals(ticker_symbol):
         if 0 < pb_float <= 1.5:
             graham_score += 1
             graham_eval.append(f"- ✅ P/B je {pb_float:.2f} (pod limitem 1.5)")
-        else:
-            graham_eval.append(f"- ❌ P/B je {pb_float:.2f} (nad limitem 1.5, trh žádá prémii)")
-    except: graham_eval.append("- ❌ P/B chybí (nelze určit)")
+        else: graham_eval.append(f"- ❌ P/B je {pb_float:.2f} (nad limitem 1.5)")
+    except: graham_eval.append("- ❌ P/B chybí")
 
     try:
         if pe_float and pb_float:
             graham_num = pe_float * pb_float
             if graham_num <= 22.5 and pe_float > 0:
                 graham_score += 1
-                graham_eval.append(f"- ✅ Grahamovo číslo je {graham_num:.2f} (limit do 22.5 splněn)")
-            else:
-                graham_eval.append(f"- ❌ Grahamovo číslo je {graham_num:.2f} (limit nad 22.5 překročen)")
-        else: graham_eval.append("- ❌ Nelze spočítat Grahamovo číslo (chybí data)")
+                graham_eval.append(f"- ✅ Grahamovo číslo je {graham_num:.2f} (splněno)")
+            else: graham_eval.append(f"- ❌ Grahamovo číslo je {graham_num:.2f} (překročeno)")
+        else: graham_eval.append("- ❌ Nelze spočítat Grahamovo číslo")
     except: graham_eval.append("- ❌ Nelze spočítat Grahamovo číslo")
 
     try:
         cr_float = float(current_ratio)
         if cr_float >= 2.0:
             graham_score += 1
-            graham_eval.append(f"- ✅ Běžná likvidita je {cr_float:.2f} (limit nad 2.0 splněn)")
-        else:
-            graham_eval.append(f"- ❌ Běžná likvidita je {cr_float:.2f} (pod limitem 2.0)")
-    except: graham_eval.append("- ❌ Běžná likvidita chybí (nelze určit)")
+            graham_eval.append(f"- ✅ Běžná likvidita je {cr_float:.2f} (splněno)")
+        else: graham_eval.append(f"- ❌ Běžná likvidita je {cr_float:.2f} (pod limitem 2.0)")
+    except: graham_eval.append("- ❌ Běžná likvidita chybí")
 
     if debt != "HODNOTA_NEEXISTUJE" and cash != "HODNOTA_NEEXISTUJE":
         try:
             if (float(debt) - float(cash)) < 0:
                 graham_score += 1
-                graham_eval.append("- ✅ Více hotovosti než celkového dluhu (excelentní finanční polštář)")
-            else:
-                graham_eval.append("- ❌ Celkový dluh převyšuje dostupnou hotovost")
+                graham_eval.append("- ✅ Více hotovosti než celkového dluhu")
+            else: graham_eval.append("- ❌ Celkový dluh převyšuje hotovost")
         except: graham_eval.append("- ❌ Nelze porovnat dluh a hotovost")
-    else: graham_eval.append("- ❌ Nelze porovnat dluh a hotovost (chybí data)")
+    else: graham_eval.append("- ❌ Nelze porovnat dluh a hotovost")
 
     graham_text = "\n".join(graham_eval)
     
@@ -405,29 +393,22 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         NESMÍŠ psát žádný text, nesmíš psát analýzu. 
         Tvá JEDINÁ povolená odpověď je speciální značka s tickerem. 
         Formát: [FETCH: HLEDANY_TICKER]
-        Příklad 1: Uživatel řekne "co mi řekneš o metě?", ty odpovíš: [FETCH: META]
-        Příklad 2: Uživatel řekne "analyzuj microsoft", ty odpovíš: [FETCH: MSFT]
         """
         
         system_prompt_analyst = f"""
-        Jsi MInBot, nekompromisní a špičkový investiční analytik z Wall Street.
-        ZNALOSTI Z REPORTŮ A KNIH (Pinecone): {context_books} \n PORTFOLIO A SLEDOVANÉ (Google Sheets): {portfolio_context}
+        Jsi MInBot, nekompromisní a špičkový investiční analytik a geopolitický stratég z Wall Street.
+        ZNALOSTI Z REPORTŮ A KNIH: {context_books} \n PORTFOLIO: {portfolio_context}
         
-        TVŮJ ÚKOL:
-        Odpovídej na dotazy uživatele s naprostou přesností.
+        TVŮJ ÚKOL: Odpovídej na dotazy s naprostou přesností. Pokud uživatel žádá o rozbor, použij KOMPLETNÍ ŠABLONU níže.
         
-        TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA PRO TEXT A STRUKTURU:
-        1. DETEKCE ZÁMĚRU (DŮLEŽITÉ): 
-           - Pokud se uživatel ptá na JEDNODUCHOU a KONKRÉTNÍ věc (např. "jaká je aktuální cena", "jaké je P/E"), odpověz STRUČNĚ, přímo na otázku a NEPOUŽÍVEJ plnou šablonu.
-           - Pokud se uživatel ptá na "analýzu", "rozbor", nebo se ptá obecně (např. "co mi řekneš o..."), MUSÍŠ použít KOMPLETNÍ ŠABLONU níže.
-        2. VYKRESLOVÁNÍ GRAFŮ (NEZBYTNÉ): Máš zabudovaný nástroj na tvorbu interaktivních grafů! Pokud tě uživatel požádá o vykreslení grafu (jakékoliv akcie), MUSÍŠ kamkoliv do své odpovědi vložit tuto přesnou tajnou značku: [[GRAF: TICKER | ROK_OD | ROK_DO]].
-        3. ABSOLUTNÍ ZÁKAZ STRUČNOSTI U ANALÝZY: Pokud tvoříš analýzu podle šablony, NESMÍŠ zkrátit text! Každou sekci rozepiš do hloubky.
-        4. PŘEHLEDNÉ ODRÁŽKY: V sekcích "Základní ocenění", "Rozvaha a hotovost" a nově "Technická analýza a momentum" MUSÍŠ vždy nejprve vypsat obdržená data formou odrážek. 
-        5. GRAHAMOVO SKÓRE: Z dodaných dat MUSÍŠ doslova opsat VŠECH 5 BODŮ.
-        6. DYNAMICKÁ VÝHYBKA: U nadpisu zvol buď 'Tvrdá data z 10-K' nebo 'Lokální výroční zprávy'.
-        7. TECHNICKÁ ANALÝZA: V nové sekci detailně interpretuj hodnoty SMA (Zlatý kříž/Kříž smrti), RSI (překoupeno/přeprodáno) a MACD.
+        TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA:
+        1. DETEKCE ZÁMĚRU: Pro dotaz pouze na cenu odpověz stručně jednou větou.
+        2. VYKRESLOVÁNÍ GRAFŮ: Pokud uživatel chce graf, vlož značku [[GRAF: TICKER | ROK_OD | ROK_DO]].
+        3. ASOCIAČNÍ LOGIKA (DŮLEŽITÉ): Nejsi jen účetní. V sekci 'Makroekonomika a globální souvislosti' MUSÍŠ logicky propojovat tečkovat. Zhodnoť, jaký dopad mají zprávy o virálních trendech, politice, válkách nebo problémech s dodavatelskými řetězci na byznys model konkrétní firmy.
+        4. ODRÁŽKY A ZÁKAZ STRUČNOSTI: V analytických sekcích vždy vypiš data do odrážek a detailně je okomentuj.
+        5. GRAHAMOVO SKÓRE: Doslova opiš všech 5 bodů.
         
-        ŠABLONA ODPOVĚDI (POUŽIJ POUZE PRO KOMPLEXNÍ ANALÝZU):
+        ŠABLONA ODPOVĚDI (POUŽIJ PRO ANALÝZU):
         
         ### Základní ocenění a rentabilita
         [Vypiš čísla do odrážek a rozepiš komentář.]
@@ -436,25 +417,25 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         [Vypiš čísla do odrážek a rozepiš komentář.]
 
         ### Technická analýza a momentum
-        [Vypiš hodnoty SMA, RSI a MACD do odrážek. Následně detailně rozeber, co znamenají pro aktuální trend a načasování vstupu.]
+        [Vypiš hodnoty SMA, RSI a MACD do odrážek a rozeber trend.]
 
         ### Hodnocení podle Benjamina Grahama
-        [Napiš celkové skóre a VYPIŠ VŠECH 5 ODRÁŽEK.]
+        [Napiš skóre a VYPIŠ 5 ODRÁŽEK.]
 
         [VARIANTA A: ### Tvrdá data z 10-K formuláře NEBO VARIANTA B: ### Lokální výroční zprávy a hovory s akcionáři]
-        [Rozepiš detailně rizika a plány.]
+        [Rozeber plány managementu.]
 
-        ### Aktuální dění a sentiment na trhu
-        [Zde zanalyzuj předložené zprávy z důvěryhodných zdrojů.]
+        ### Aktuální dění a firemní sentiment
+        [Zanalyzuj zprávy z důvěryhodných webů (Reuters, Bloomberg atd.).]
+
+        ### Makroekonomika a globální souvislosti
+        [ZDE POUŽIJ ASOCIAČNÍ LOGIKU! Rozeber širší obraz z 'Makro a sociálního radaru'. Jak virální trendy na sítích, geopolitika nebo makroekonomické vlivy dopadají na tuto konkrétní akcii?]
 
         ### Syntéza tří světů (Křížová kontrola)
-        [Propoj historii, plány managementu, techniku a aktuální zprávy z webu.]
+        [Propoj fundamenty, techniku, management a makroekonomiku do jednoho závěru.]
 
         ### Typologie investora a vhodnost do portfolia
-        [Detailně urči: Profil investora, Investiční horizont, Role v portfoliu.]
-
-        ### Celkové shrnutí a závěr
-        [Jasný a nekompromisní závěr pro investora, shrň rizika a výhody.]
+        [Detailně urči Profil, Horizont a Roli v portfoliu.]
         """
 
         try:
@@ -468,19 +449,20 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
             
             if fund_match:
                 fund_ticker = fund_match.group(1).strip().upper()
-                with st.spinner(f"Stahuji data pro {fund_ticker}..."):
+                with st.spinner(f"Skenuji trhy, fundamenty a globální trendy pro {fund_ticker}..."):
                     
                     company_name = get_company_name(fund_ticker)
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
                     if "[CRITICAL_DATA_BLOCK]" in fund_context:
-                        fund_context = f"[UPOZORNĚNÍ PRO AI] Kaskáda API pro živá čísla selhala. POKRAČUJ v odpovědi! Pokud je dotaz obecný, použij šablonu, ale upozorni, že data chybí."
+                        fund_context = f"[UPOZORNĚNÍ PRO AI] Kaskáda API selhala. POKRAČUJ v odpovědi podle šablony, ale více zanalyzuj makroekonomiku a zprávy!"
                         
                     tech_data = get_technical_data(fund_ticker)
                     transcript_data = get_fmp_transcript(fund_ticker)
                     trusted_news_data = get_trusted_news(company_name)
+                    social_macro_data = get_social_macro_news(company_name)
                     
-                    hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\n{tech_data}\nHOVORY:\n{transcript_data}\nAKTUÁLNÍ ZPRÁVY:\n{trusted_news_data}\n\nNezapomeň! Pokud je dotaz jen na cenu/P/E, odpověz jednou větou. Pokud na analýzu, nepoužívej stručnost a dodrž šablonu! A pokud uživatel chce graf, použij značku [[GRAF: TICKER | OD | DO]]!"
+                    hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\n{tech_data}\nHOVORY:\n{transcript_data}\nFIREMNÍ ZPRÁVY:\n{trusted_news_data}\nMAKRO A SOCIÁLNÍ TRENDY:\n{social_macro_data}\n\nPamatuj na asociační logiku! Propojuj události!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
                     messages_analyst = [{"role": "system", "content": system_prompt_analyst}]
