@@ -148,7 +148,7 @@ def get_graham_fundamentals(ticker_symbol):
             api_source = "Yahoo Finance"
     except: pass
 
-    # KROK 2 a 3: FMP (Jako záloha nebo doplnění)
+    # KROK 2 a 3: FMP
     try:
         q_url = f"https://financialmodelingprep.com/api/v3/quote/{ticker}?apikey={FMP_KEY}"
         q_resp = requests.get(q_url).json()
@@ -161,7 +161,7 @@ def get_graham_fundamentals(ticker_symbol):
         if isinstance(m_resp, list) and m_resp: metrics_data = m_resp[0]
     except: pass
 
-    # Alpha Vantage (Pokud je potřeba extra fallback)
+    # Alpha Vantage
     av_resp = {}
     if api_source == "Neznámý" and AV_KEY:
         try:
@@ -174,7 +174,7 @@ def get_graham_fundamentals(ticker_symbol):
     if api_source == "Neznámý":
         return "[CRITICAL_DATA_BLOCK] Kaskáda API selhala. Nelze získat aktuální čísla z burzy."
 
-    # --- BEZPEČNÉ FORMÁTOVÁNÍ (Konec chyb s procenty) ---
+    # Formátování čísel
     if yf_info and yf_info.get('currentPrice'):
         currency = yf_info.get('financialCurrency', 'USD').upper()
         current_price = f"{yf_info.get('currentPrice')} {currency}"
@@ -197,7 +197,6 @@ def get_graham_fundamentals(ticker_symbol):
     fcf = get_best_val('freeCashflow', None, None, 'freeCashFlowYieldTTM')
     debt_to_equity = get_best_val('debtToEquity', None, None, 'debtToEquityTTM')
 
-    # Oprava procent (Nyní bezpečně rozlišujeme formát zdroje)
     roe = "HODNOTA_NEEXISTUJE"
     if yf_info and yf_info.get('returnOnEquity') is not None:
         roe = f"{float(yf_info.get('returnOnEquity')) * 100:.2f} %"
@@ -214,7 +213,6 @@ def get_graham_fundamentals(ticker_symbol):
     if yf_info and yf_info.get('dividendYield') is not None:
         dividend_yield = f"{float(yf_info.get('dividendYield')) * 100:.2f} %"
     elif metrics_data and metrics_data.get('dividendYieldPercentageTTM') is not None:
-        # FMP posílá dividendu už jako procento (např. 0.41), proto NENÁSOBÍME stovkou
         dividend_yield = f"{float(metrics_data.get('dividendYieldPercentageTTM')):.2f} %"
 
     def format_money(val):
@@ -377,11 +375,14 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         1. DETEKCE ZÁMĚRU (DŮLEŽITÉ): 
            - Pokud se uživatel ptá na JEDNODUCHOU a KONKRÉTNÍ věc (např. "jaká je aktuální cena", "jaké je P/E"), odpověz STRUČNĚ, přímo na otázku a NEPOUŽÍVEJ plnou šablonu.
            - Pokud se uživatel ptá na "analýzu", "rozbor", nebo se ptá obecně (např. "co mi řekneš o..."), MUSÍŠ použít KOMPLETNÍ ŠABLONU níže.
-        2. ABSOLUTNÍ ZÁKAZ STRUČNOSTI U ANALÝZY: Pokud tvoříš analýzu podle šablony, NESMÍŠ zkrátit text! Každou sekci rozepiš do hloubky.
-        3. PŘEHLEDNÉ ODRÁŽKY: V sekcích "Základní ocenění" a "Rozvaha a hotovost" MUSÍŠ vždy nejprve vypsat obdržená data formou odrážek. 
-        4. GRAHAMOVO SKÓRE: Z dodaných dat MUSÍŠ doslova opsat VŠECH 5 BODŮ. Je absolutně ZAKÁZÁNO odrážky slučovat! 
-        5. DYNAMICKÁ VÝHYBKA: U 4. nadpisu zvol buď 'Tvrdá data z 10-K' (americké firmy) nebo 'Lokální výroční zprávy' (zahraniční).
-        6. SENTIMENT ZPRÁV: Vycházej čistě ze zpráv z DuckDuckGo a zhodnoť, zda převládá pozitivní nebo negativní nálada.
+        2. VYKRESLOVÁNÍ GRAFŮ (NEZBYTNÉ): Máš zabudovaný nástroj na tvorbu interaktivních grafů! Pokud tě uživatel požádá o vykreslení grafu (jakékoliv akcie), MUSÍŠ kamkoliv do své odpovědi vložit tuto přesnou tajnou značku: [[GRAF: TICKER | ROK_OD | ROK_DO]].
+           Příklad 1: "udělej mi graf vývoje ceny applu od roku 2007 - 2021" -> ty odpovíš a někam do textu vložíš [[GRAF: AAPL | 2007 | 2021]].
+           Příklad 2: "Ukaž mi graf Mety" -> vložíš [[GRAF: META | | ]].
+        3. ABSOLUTNÍ ZÁKAZ STRUČNOSTI U ANALÝZY: Pokud tvoříš analýzu podle šablony, NESMÍŠ zkrátit text! Každou sekci rozepiš do hloubky.
+        4. PŘEHLEDNÉ ODRÁŽKY: V sekcích "Základní ocenění" a "Rozvaha a hotovost" MUSÍŠ vždy nejprve vypsat obdržená data formou odrážek. 
+        5. GRAHAMOVO SKÓRE: Z dodaných dat MUSÍŠ doslova opsat VŠECH 5 BODŮ. Je absolutně ZAKÁZÁNO odrážky slučovat! 
+        6. DYNAMICKÁ VÝHYBKA: U 4. nadpisu zvol buď 'Tvrdá data z 10-K' (americké firmy) nebo 'Lokální výroční zprávy' (zahraniční).
+        7. SENTIMENT ZPRÁV: Vycházej čistě ze zpráv z DuckDuckGo a zhodnoť, zda převládá pozitivní nebo negativní nálada.
         
         ŠABLONA ODPOVĚDI (POUŽIJ POUZE PRO KOMPLEXNÍ ANALÝZU):
         
@@ -432,7 +433,7 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                     transcript_data = get_fmp_transcript(fund_ticker)
                     trusted_news_data = get_trusted_news(company_name)
                     
-                    hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\nHOVORY:\n{transcript_data}\nAKTUÁLNÍ ZPRÁVY:\n{trusted_news_data}\n\nNezapomeň! Pokud je dotaz jen na cenu/P/E, odpověz jednou větou. Pokud na analýzu, nepoužívej stručnost a dodrž šablonu!"
+                    hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\nHOVORY:\n{transcript_data}\nAKTUÁLNÍ ZPRÁVY:\n{trusted_news_data}\n\nNezapomeň! Pokud je dotaz jen na cenu/P/E, odpověz jednou větou. Pokud na analýzu, nepoužívej stručnost a dodrž šablonu! A pokud uživatel chce graf, použij značku [[GRAF: TICKER | OD | DO]]!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
                     messages_analyst = [{"role": "system", "content": system_prompt_analyst}]
