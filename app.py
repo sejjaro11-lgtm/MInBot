@@ -112,27 +112,34 @@ def get_fmp_transcript(ticker):
     except Exception as e: 
         return f"Chyba při stahování hovoru: {str(e)}"
 
-# --- 4.2 ZÍSKÁNÍ ZPRÁV Z WEBU (DUCKDUCKGO) ---
-def get_ddg_web_data(company_name):
+# --- 4.2 NOVÉ: FILTR DŮVĚRYHODNÝCH ZPRÁV Z WEBU (WHITELISTING) ---
+def get_trusted_news(company_name):
     if not DDG_AVAILABLE: return "Údaj není veřejně dostupný."
     try:
+        # Seznam povolených domén
+        trusted_domains = ["reuters.com", "bloomberg.com", "cnbc.com", "ft.com", "wsj.com", "finance.yahoo.com"]
+        # Vytvoření vyhledávacího dotazu s operátory OR pro konkrétní weby
+        sites_query = " OR ".join([f"site:{domain}" for domain in trusted_domains])
+        query = f'"{company_name}" ({sites_query})'
+        
         with DDGS() as ddgs:
-            results = list(ddgs.text(f'"{company_name}" investor relations earnings report news', max_results=4))
-            if results: return "\n".join([f"- {r.get('title', '')}: {r.get('body', '')}" for r in results])
-            return "Na webu nebyly nalezeny žádné aktuální zprávy."
+            results = list(ddgs.text(query, max_results=5))
+            if results: 
+                # Vracíme nalezené titulky a popisky, aby z nich AI mohla vyčíst sentiment
+                return "\n".join([f"- [{r.get('title', '')}]({r.get('href', '')}): {r.get('body', '')}" for r in results])
+            return "Na povolených důvěryhodných webech nebyly momentálně nalezeny žádné zásadní aktuální zprávy."
     except Exception as e: 
-        return f"Chyba při vyhledávání: {str(e)}"
+        return f"Chyba při vyhledávání zpráv: {str(e)}"
 
 # --- 4.5 KASKÁDOVÁ FUNDAMENTÁLNÍ DATA (Yahoo -> Alpha Vantage -> FMP) ---
 def get_graham_fundamentals(ticker_symbol):
     ticker = ticker_symbol.upper()
     api_source = "Neznámý"
     
-    # OPRAVA CHYBY: Přidáno pe_forward do výchozích proměnných!
     pe_trailing = pe_forward = pb = debt = cash = current_ratio = fcf = debt_to_equity = roe = profit_margin = dividend_yield = "HODNOTA_NEEXISTUJE"
     currency = "USD"
     
-    # KROK 1: Pokus o zisk z Yahoo Finance (Nejvíce dat, ale hrozí ban)
+    # KROK 1: Pokus o zisk z Yahoo Finance (Nejvíce dat)
     try:
         stock = yf.Ticker(ticker)
         yf_info = stock.info
@@ -166,7 +173,6 @@ def get_graham_fundamentals(ticker_symbol):
                 roe = av_resp.get('ReturnOnEquityTTM', "HODNOTA_NEEXISTUJE")
                 profit_margin = av_resp.get('ProfitMargin', "HODNOTA_NEEXISTUJE")
                 dividend_yield = av_resp.get('DividendYield', "HODNOTA_NEEXISTUJE")
-                # Alpha Vantage Overview nedává dluh a hotovost, proto zůstanou HODNOTA_NEEXISTUJE
         except:
             pass
 
@@ -183,7 +189,7 @@ def get_graham_fundamentals(ticker_symbol):
 
     # KRIZOVÝ PROTOKOL: Pokud padly všechny 3 systémy
     if api_source == "Neznámý":
-        return "[CRITICAL_DATA_BLOCK] Kaskáda selhala: Yahoo blokuje, Alpha Vantage nemá limit, FMP mlčí."
+        return "[CRITICAL_DATA_BLOCK] Kaskáda API selhala: Yahoo blokuje, Alpha Vantage vyčerpáno, FMP nedostupné."
 
     # Formátování čísel pro výstup
     def format_money(val):
@@ -347,16 +353,17 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         ZNALOSTI Z REPORTŮ A KNIH (Pinecone): {context_books} \n PORTFOLIO A SLEDOVANÉ (Google Sheets): {portfolio_context}
         
         TVŮJ ÚKOL:
-        Vypracuj naprosto detailní, hlubokou analýzu na základě dodaných dat z burzy, webu a hovorů.
+        Vypracuj naprosto detailní, hlubokou analýzu na základě dodaných dat z burzy, důvěryhodného webu a hovorů.
         
         TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA PRO TEXT A STRUKTURU:
-        1. ABSOLUTNÍ ZÁKAZ STRUČNOSTI: I když ti systém ohlásí, že čísla z burzy selhala, NESMÍŠ zkrátit analýzu! Pokud chybí čísla, musíš se o to masivněji rozepsat v sekcích o webu, zprávách z Pinecone a typologii investora!
-        2. PŘEHLEDNÉ ODRÁŽKY: V sekcích "Základní ocenění" a "Rozvaha a hotovost" MUSÍŠ vždy nejprve vypsat obdržená data formou odrážek. Pokud data nemáš, vypiš do odrážek "Data momentálně nedostupná". Pod odrážkami napiš analytický komentář.
-        3. GRAHAMOVO SKÓRE: Z dodaných dat MUSÍŠ doslova opsat VŠECH 5 BODŮ. Je absolutně ZAKÁZÁNO odrážky slučovat nebo zkracovat! Pokud data nemáš, vysvětli proč Grahama nelze spočítat.
+        1. ABSOLUTNÍ ZÁKAZ STRUČNOSTI: NESMÍŠ zkrátit analýzu! Každou sekci rozepiš do hloubky.
+        2. PŘEHLEDNÉ ODRÁŽKY: V sekcích "Základní ocenění" a "Rozvaha a hotovost" MUSÍŠ vždy nejprve vypsat obdržená data formou odrážek. Pod odrážkami napiš analytický komentář.
+        3. GRAHAMOVO SKÓRE: Z dodaných dat MUSÍŠ doslova opsat VŠECH 5 BODŮ. Je absolutně ZAKÁZÁNO odrážky slučovat nebo zkracovat! 
         4. DYNAMICKÁ VÝHYBKA: U 4. nadpisu zvol buď 'Tvrdá data z 10-K' (americké firmy) nebo 'Lokální výroční zprávy' (zahraniční).
-        5. TYPOLOGIE INVESTORA: Na konci detailně urči Profil investora, Horizont a Roli v portfoliu na základě dostupných informací.
+        5. SENTIMENT ZPRÁV: V nové sekci 'Aktuální dění a sentiment' nesmíš fantazírovat. Vyjdi čistě z předložených zpráv (z Reuters, Bloomberg atd.) a zhodnoť, zda převládá pozitivní nebo negativní nálada.
+        6. TYPOLOGIE INVESTORA: Na konci detailně urči Profil investora, Horizont a Roli v portfoliu na základě dostupných informací.
         
-        ŠABLONA ODPOVĚDI (DODRŽUJ PŘESNĚ BEZ OHLEDU NA TO, JESTLI MÁŠ ČÍSLA NEBO NE):
+        ŠABLONA ODPOVĚDI (DODRŽUJ PŘESNĚ):
         
         ### Základní ocenění a rentabilita
         [Vypiš čísla do odrážek a rozepiš komentář.]
@@ -370,8 +377,11 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         [VARIANTA A: ### Tvrdá data z 10-K formuláře NEBO VARIANTA B: ### Lokální výroční zprávy a hovory s akcionáři]
         [Rozepiš detailně rizika a plány.]
 
+        ### Aktuální dění a sentiment na trhu
+        [Zde zanalyzuj předložené zprávy z důvěryhodných zdrojů. Zhodnoť hlavní události a to, zda je aktuální sentiment trhu býčí nebo medvědí.]
+
         ### Syntéza tří světů (Křížová kontrola)
-        [TOTO JE NEJDŮLEŽITĚJŠÍ ČÁST POKUD CHYBÍ ČÍSLA! Zde detailně rozeber informace získané z DuckDuckGo a Pinecone.]
+        [Zde detailně propoj historii, plány managementu a aktuální zprávy z webu do jednoho komplexního pohledu na budoucnost.]
 
         ### Typologie investora a vhodnost do portfolia
         [Detailně urči: Profil investora, Investiční horizont, Role v portfoliu.]
@@ -397,13 +407,13 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
                     if "[CRITICAL_DATA_BLOCK]" in fund_context:
-                        st.warning(f"⚠️ MInBot vyčerpal celou kaskádu (Yahoo blokuje, Alpha Vantage nemá limit/chybí klíč, FMP mlčí). \n{fund_context} \nMInBot se nyní spolehne na web a paměť.")
-                        fund_context = f"[UPOZORNĚNÍ PRO AI] Kaskáda API selhala. POKRAČUJ v analýze podle šablony! Do sekcí s čísly napiš, že data nejsou dostupná kvůli výpadku burzovního API, ale o to více zanalyzuj web a hovory!"
+                        st.warning(f"⚠️ MInBot vyčerpal celou kaskádu pro čísla. \n{fund_context} \nMInBot se nyní plně spolehne na aktuální zprávy (Reuters, Bloomberg atd.) a paměť.")
+                        fund_context = f"[UPOZORNĚNÍ PRO AI] Kaskáda API selhala. POKRAČUJ v analýze podle šablony! Do sekcí s čísly napiš, že data nejsou dostupná kvůli výpadku, ale o to více zanalyzuj zprávy z důvěryhodných webů!"
                         
                     transcript_data = get_fmp_transcript(fund_ticker)
-                    web_data = get_ddg_web_data(company_name)
+                    trusted_news_data = get_trusted_news(company_name) # Použití nového Whitelist filtru
                     
-                    hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\nHOVORY:\n{transcript_data}\nWEB:\n{web_data}\n\nNezapomeň! I když chybí čísla, NESMÍŠ zkrátit text!"
+                    hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\nHOVORY:\n{transcript_data}\nAKTUÁLNÍ ZPRÁVY (Důvěryhodné zdroje):\n{trusted_news_data}\n\nNezapomeň! NESMÍŠ zkrátit text a detailně zanalyzuj sentiment trhu podle zpráv!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
                     messages_analyst = [{"role": "system", "content": system_prompt_analyst}]
