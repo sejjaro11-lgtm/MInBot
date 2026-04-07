@@ -9,7 +9,6 @@ import yfinance as yf
 import re
 import requests
 
-# Zkusíme načíst DuckDuckGo (pokud chybí, upozorníme)
 try:
     from duckduckgo_search import DDGS
     DDG_AVAILABLE = True
@@ -36,23 +35,11 @@ except Exception as e:
     st.error(f"Chyba v klíčích nebo připojení k AI: {e}")
     st.stop()
 
-# Inicializace modelu
 @st.cache_resource
 def get_model():
     return SentenceTransformer('all-MiniLM-L6-v2')
 
 model = get_model()
-
-# --- 2.5 KAMUFLÁŽ PRO YAHOO FINANCE (USER-AGENT) ---
-def get_yf_session():
-    """Vytvoří HTTP session, která se tváří jako reálný prohlížeč Chrome na Windows."""
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5"
-    })
-    return session
 
 # --- 3. NAČTENÍ DAT Z GOOGLE SHEETS (Skrytě) ---
 SHEET_ID = "1gAp2_XHEiNzQB7uODtcK2FmLrEXFm2yQ0wPNo6sJTds"
@@ -62,209 +49,146 @@ def load_google_sheet(sheet_name):
     return pd.read_csv(url)
 
 portfolio_context = "" 
-
 try:
     df_portfolio = load_google_sheet("Portfolio")
     df_sledovane = load_google_sheet("Sledovane")
-
     portfolio_txt = df_portfolio.to_string(index=False)
     sledovane_txt = df_sledovane.to_string(index=False)
-    
-    portfolio_context = f"""
-    DATA Z PORTFOLIA UŽIVATELE:
-    {portfolio_txt}
-    
-    DATA ZE SLEDOVANÝCH AKCIÍ A INDEXŮ:
-    {sledovane_txt}
-    """
-except Exception as e:
+    portfolio_context = f"DATA Z PORTFOLIA:\n{portfolio_txt}\nDATA ZE SLEDOVANÝCH:\n{sledovane_txt}"
+except Exception: 
     pass
 
-# --- 4. FUNKCE PRO VYKRESLENÍ A ANALÝZU GRAFU ---
+# --- 4. FUNKCE PRO VYKRESLENÍ A ANALÝZU GRAFU (yfinance) ---
 def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
     stats_summary = None 
-    session = get_yf_session() # Nasazení masky
     try:
-        with st.spinner(f"Analyzuji data pro {ticker_symbol}..."):
-            data = yf.download(ticker_symbol, period="max", session=session, progress=False)
-            if data.empty:
-                st.error(f"Pro symbol {ticker_symbol} nejsou data.")
+        with st.spinner(f"Vykresluji graf pro {ticker_symbol}..."):
+            data = yf.download(ticker_symbol, period="max", progress=False)
+            if data.empty: 
                 return None
 
             if isinstance(data.columns, pd.MultiIndex):
                 y_data = data['Close']
             else:
                 y_data = data['Close']
-            
-            if isinstance(y_data, pd.DataFrame):
+                
+            if isinstance(y_data, pd.DataFrame): 
                 y_data = y_data.iloc[:, 0]
 
-            if start_year and start_year.isdigit():
+            if start_year and start_year.isdigit(): 
                 y_data = y_data[y_data.index.year >= int(start_year)]
-            if end_year and end_year.isdigit():
+            if end_year and end_year.isdigit(): 
                 y_data = y_data[y_data.index.year <= int(end_year)]
-
-            if y_data.empty:
-                st.warning(f"Žádná data pro období {start_year}-{end_year}.")
+                
+            if y_data.empty: 
                 return None
 
-            title_text = f"📈 Vývoj ceny: {ticker_symbol}"
-            if start_year: title_text += f" (od {start_year})"
-            if end_year: title_text += f" (do {end_year})"
-                
-            st.subheader(title_text)
+            st.subheader(f"📈 Vývoj ceny: {ticker_symbol}")
             st.line_chart(y_data)
             
             try:
                 last_price = float(y_data.iloc[-1])
                 first_price = float(y_data.iloc[0])
                 change_pct = ((last_price - first_price) / first_price) * 100
-                
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Cena na konci", f"{last_price:,.2f} USD")
                 col2.metric("Změna", f"{change_pct:+.2f} %")
                 col3.metric("Nejvyšší bod (ATH)", f"{float(y_data.max()):,.2f} USD")
-            except Exception:
+            except Exception: 
                 pass
 
-            stats_summary = f"""
-            [VÝSLEDEK ANALÝZY GRAFU PRO {ticker_symbol}]
-            Zobrazené období: {start_year if start_year else 'Začátek'} - {end_year if end_year else 'Dnes'}
-            Počáteční cena: {first_price:.2f} USD
-            Konečná cena: {last_price:.2f} USD
-            Celková změna: {change_pct:.2f}%
-            """
-            
-    except Exception as e:
-        st.error(f"Chyba grafu: {e}")
-        return None
-        
+            stats_summary = f"[GRAF PRO {ticker_symbol}] Počáteční cena: {first_price:.2f}, Konečná cena: {last_price:.2f}, Změna: {change_pct:.2f}%"
+    except Exception: 
+        pass
     return stats_summary
 
-# --- ZJIŠTĚNÍ JMÉNA FIRMY PRO LEPŠÍ VYHLEDÁVÁNÍ ---
+# --- 4.1 ZÍSKÁNÍ JMÉNA FIRMY A PŘEPISŮ (FMP) ---
 def get_company_name(ticker):
     try:
-        session = get_yf_session()
-        stock = yf.Ticker(ticker, session=session)
-        return stock.info.get('shortName', stock.info.get('longName', ticker))
-    except:
-        return ticker
+        url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_KEY}"
+        resp = requests.get(url).json()
+        if resp: 
+            return resp[0].get('companyName', ticker)
+    except: 
+        pass
+    return ticker
 
-# --- 4.1 ZÍSKÁNÍ PŘEPISU HOVORŮ (FMP TRANSCRIPTS) ---
 def get_fmp_transcript(ticker):
     try:
         url = f"https://financialmodelingprep.com/api/v3/earning_call_transcript/{ticker}?apikey={FMP_KEY}"
         resp = requests.get(url).json()
         if isinstance(resp, list) and len(resp) > 0:
-            content = resp[0].get('content', '')
-            date = resp[0].get('date', 'Neznámé datum')
-            return f"(Datum hovoru: {date})\n{content[:3000]}..."
-        return "Údaj není veřejně dostupný (hovor v databázi FMP nenalezen)."
-    except Exception as e:
+            return f"(Datum hovoru: {resp[0].get('date', 'Neznámé')})\n{resp[0].get('content', '')[:3000]}..."
+        return "Údaj není veřejně dostupný (hovor nenalezen)."
+    except Exception as e: 
         return f"Chyba při stahování hovoru: {str(e)}"
 
 # --- 4.2 ZÍSKÁNÍ ZPRÁV Z WEBU (DUCKDUCKGO) ---
 def get_ddg_web_data(company_name):
-    if not DDG_AVAILABLE:
-        return "Údaj není veřejně dostupný (chybí knihovna pro vyhledávání)."
+    if not DDG_AVAILABLE: 
+        return "Údaj není veřejně dostupný."
     try:
         with DDGS() as ddgs:
-            query = f'"{company_name}" investor relations earnings report news'
-            results = list(ddgs.text(query, max_results=4))
-            if results:
-                formatted_results = "\n".join([f"- {r.get('title', '')}: {r.get('body', '')}" for r in results])
-                return formatted_results
-            return "Na webu nebyly nalezeny žádné aktuální zprávy z oblasti investor relations."
-    except Exception as e:
-        return f"Chyba při vyhledávání na webu: {str(e)}"
+            results = list(ddgs.text(f'"{company_name}" investor relations earnings report news', max_results=4))
+            if results: 
+                return "\n".join([f"- {r.get('title', '')}: {r.get('body', '')}" for r in results])
+            return "Na webu nebyly nalezeny žádné aktuální zprávy."
+    except Exception as e: 
+        return f"Chyba při vyhledávání: {str(e)}"
 
-# --- 4.5 FUNKCE PRO FUNDAMENTÁLNÍ DATA & GRAHAMOVO SKÓRE ---
+# --- 4.5 FUNDAMENTÁLNÍ DATA (ČISTĚ Z FMP API) ---
 def get_graham_fundamentals(ticker_symbol):
     ticker = ticker_symbol.upper()
     try:
-        fmp_data = {}
-        try:
-            fmp_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{ticker}?apikey={FMP_KEY}"
-            fmp_resp = requests.get(fmp_url).json()
-            if isinstance(fmp_resp, list) and len(fmp_resp) > 0:
-                fmp_data = fmp_resp[0]
-        except Exception:
-            pass 
+        quote_data = {}
+        metrics_data = {}
+        
+        # 1. Základní kotace
+        q_url = f"https://financialmodelingprep.com/api/v3/quote/{ticker}?apikey={FMP_KEY}"
+        q_resp = requests.get(q_url).json()
+        if q_resp: 
+            quote_data = q_resp[0]
+            
+        # 2. Key Metrics TTM
+        m_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{ticker}?apikey={FMP_KEY}"
+        m_resp = requests.get(m_url).json()
+        if m_resp: 
+            metrics_data = m_resp[0]
 
-        try:
-            session = get_yf_session() # Nasazení masky pro získání fundamentů
-            stock = yf.Ticker(ticker, session=session)
-            info = stock.info
-        except:
-            info = {}
+        if not quote_data and not metrics_data:
+            return "[CRITICAL_DATA_BLOCK]"
 
-        currency = info.get('financialCurrency', info.get('currency', 'USD'))
-        if not currency: currency = "USD"
-        currency = currency.upper()
-
-        def get_best_val(fmp_key, yf_key):
-            val_fmp = fmp_data.get(fmp_key)
-            if val_fmp is not None and val_fmp != "": return val_fmp
-            val_yf = info.get(yf_key)
-            if val_yf is not None and val_yf != "": return val_yf
-            return "HODNOTA_NEEXISTUJE"
-
+        currency = "USD"
+        
         def format_money(val):
-            if val == "HODNOTA_NEEXISTUJE" or val is None: return "HODNOTA_NEEXISTUJE"
+            if val is None or val == "": return "HODNOTA_NEEXISTUJE"
             try:
                 val_float = float(val)
-                abs_val = abs(val_float)
                 sign = "-" if val_float < 0 else ""
-                
+                abs_val = abs(val_float)
                 if abs_val >= 1e12: return f"{sign}{abs_val/1e12:.2f} bil. {currency}"
                 if abs_val >= 1e9: return f"{sign}{abs_val/1e9:.2f} mld. {currency}"
                 if abs_val >= 1e6: return f"{sign}{abs_val/1e6:.2f} mil. {currency}"
                 return f"{sign}{abs_val:,.2f} {currency}"
-            except: return "HODNOTA_NEEXISTUJE"
+            except: 
+                return "HODNOTA_NEEXISTUJE"
 
-        def format_decimal(val):
-            if val == "HODNOTA_NEEXISTUJE" or val is None: return "HODNOTA_NEEXISTUJE"
-            try: return f"{float(val):.2f}"
-            except: return "HODNOTA_NEEXISTUJE"
-
-        pe_trailing = get_best_val('peRatioTTM', 'trailingPE')
-        pe_forward = info.get('forwardPE', "HODNOTA_NEEXISTUJE")
+        pe_trailing = quote_data.get('pe')
+        if pe_trailing is None: 
+            pe_trailing = metrics_data.get('peRatioTTM', "HODNOTA_NEEXISTUJE")
         
-        pb = get_best_val('priceToBookValueRatioTTM', 'priceToBook')
-        debt = get_best_val('totalDebtTTM', 'totalDebt')
-        cash = get_best_val('cashAndCashEquivalentsTTM', 'totalCash')
-        current_ratio = get_best_val('currentRatioTTM', 'currentRatio')
-        fcf = get_best_val('freeCashFlowYieldTTM', 'freeCashflow')
-        debt_to_equity = get_best_val('debtToEquityTTM', 'debtToEquity')
+        pb = metrics_data.get('priceToBookValueRatioTTM', "HODNOTA_NEEXISTUJE")
+        debt = metrics_data.get('totalDebtTTM', "HODNOTA_NEEXISTUJE")
+        cash = metrics_data.get('cashAndCashEquivalentsTTM', "HODNOTA_NEEXISTUJE")
+        current_ratio = metrics_data.get('currentRatioTTM', "HODNOTA_NEEXISTUJE")
+        fcf = metrics_data.get('freeCashFlowYieldTTM', "HODNOTA_NEEXISTUJE")
+        debt_to_equity = metrics_data.get('debtToEquityTTM', "HODNOTA_NEEXISTUJE")
         
-        # KRIZOVÝ PROTOKOL: Kontrola, zda nedošlo k zablokování dat
-        if pe_trailing == "HODNOTA_NEEXISTUJE" and pb == "HODNOTA_NEEXISTUJE" and current_ratio == "HODNOTA_NEEXISTUJE":
-            return "[CRITICAL_DATA_BLOCK]"
+        roe_val = metrics_data.get('roeTTM')
+        roe = f"{float(roe_val)*100:.2f} %" if roe_val else "HODNOTA_NEEXISTUJE"
 
-        roe_fmp = fmp_data.get('roeTTM')
-        roe_yf = info.get('returnOnEquity')
-        roe_val = None
-        if roe_fmp is not None and roe_fmp != "": roe_val = float(roe_fmp) * 100
-        elif roe_yf is not None and roe_yf != "": roe_val = float(roe_yf) * 100
-        roe = f"{roe_val:.2f} %" if roe_val is not None else "HODNOTA_NEEXISTUJE"
-
-        div_fmp = fmp_data.get('dividendYieldPercentageTTM')
-        div_yf = info.get('dividendYield')
-        div_val = None
-        if div_fmp is not None and div_fmp != "": div_val = float(div_fmp)
-        elif div_yf is not None and div_yf != "": div_val = float(div_yf) * 100
-        
-        if div_val is not None:
-            if div_val > 50: div_val = div_val / 100 
-            dividend_yield = f"{div_val:.2f} %"
-        else:
-            dividend_yield = "HODNOTA_NEEXISTUJE"
-
-        margin_yf = info.get('profitMargins')
-        profit_margin = f"{float(margin_yf) * 100:.2f} %" if margin_yf is not None else "HODNOTA_NEEXISTUJE"
-
-        revenue = info.get('totalRevenue')
-        if revenue is None or revenue == "": revenue = "HODNOTA_NEEXISTUJE"
+        div_val = metrics_data.get('dividendYieldPercentageTTM')
+        dividend_yield = f"{float(div_val):.2f} %" if div_val else "HODNOTA_NEEXISTUJE"
 
         margin_safety = "HODNOTA_NEEXISTUJE"
         net_debt_val = None
@@ -272,11 +196,10 @@ def get_graham_fundamentals(ticker_symbol):
             try:
                 net_debt_val = float(debt) - float(cash)
                 margin_safety = format_money(net_debt_val)
-            except: pass
+            except: 
+                pass
 
-        # ==========================================
-        # GRAHAMŮV SKÓROVACÍ SYSTÉM (Trailing P/E)
-        # ==========================================
+        # GRAHAMŮV SKÓROVACÍ SYSTÉM
         graham_score = 0
         graham_eval = []
 
@@ -285,312 +208,224 @@ def get_graham_fundamentals(ticker_symbol):
             pe_float = float(pe_trailing)
             if 0 < pe_float <= 15:
                 graham_score += 1
-                graham_eval.append(f"- ✅ Trailing P/E je {pe_float:.2f} (pod limitem 15, defenzivní ocenění)")
+                graham_eval.append(f"- ✅ Trailing P/E je {pe_float:.2f} (pod limitem 15)")
             elif pe_float <= 0:
-                graham_eval.append(f"- ❌ Trailing P/E je {pe_float:.2f} (společnost aktuálně negeneruje zisk)")
+                graham_eval.append(f"- ❌ Trailing P/E je {pe_float:.2f} (společnost negeneruje zisk)")
             else:
-                graham_eval.append(f"- ❌ Trailing P/E je {pe_float:.2f} (nad limitem 15, trh do ceny započítává budoucí růst)")
+                graham_eval.append(f"- ❌ Trailing P/E je {pe_float:.2f} (nad limitem 15)")
         except: 
-            graham_eval.append("- ❌ Trailing P/E chybí (údaj není k dispozici)")
+            graham_eval.append("- ❌ Trailing P/E chybí")
 
         pb_float = None
         try:
             pb_float = float(pb)
             if 0 < pb_float <= 1.5:
                 graham_score += 1
-                graham_eval.append(f"- ✅ P/B je {pb_float:.2f} (pod limitem 1.5, atraktivní ocenění čistého majetku)")
+                graham_eval.append(f"- ✅ P/B je {pb_float:.2f} (pod limitem 1.5)")
             else:
-                graham_eval.append(f"- ❌ P/B je {pb_float:.2f} (nad limitem 1.5, trh žádá za aktiva prémii)")
+                graham_eval.append(f"- ❌ P/B je {pb_float:.2f} (nad limitem 1.5)")
         except: 
-            graham_eval.append("- ❌ P/B chybí (údaj není k dispozici)")
+            graham_eval.append("- ❌ P/B chybí")
 
         try:
             if pe_float and pb_float:
                 graham_num = pe_float * pb_float
                 if graham_num <= 22.5 and pe_float > 0:
                     graham_score += 1
-                    graham_eval.append(f"- ✅ Grahamovo číslo je {graham_num:.2f} (limit <= 22.5 splněn)")
+                    graham_eval.append(f"- ✅ Grahamovo číslo je {graham_num:.2f} (splněno)")
                 else:
-                    graham_eval.append(f"- ❌ Grahamovo číslo je {graham_num:.2f} (limit <= 22.5 výrazně překročen)")
-            else:
-                graham_eval.append("- ❌ Nelze spočítat Grahamovo složené číslo (chybí vstupní data)")
+                    graham_eval.append(f"- ❌ Grahamovo číslo je {graham_num:.2f} (překročeno)")
+            else: 
+                graham_eval.append("- ❌ Nelze spočítat Grahamovo číslo")
         except: 
-            graham_eval.append("- ❌ Nelze spočítat Grahamovo složené číslo")
+            graham_eval.append("- ❌ Nelze spočítat Grahamovo číslo")
 
         try:
             cr_float = float(current_ratio)
             if cr_float >= 2.0:
                 graham_score += 1
-                graham_eval.append(f"- ✅ Běžná likvidita je {cr_float:.2f} (limit >= 2.0 splněn, silná schopnost splácet dluhy)")
+                graham_eval.append(f"- ✅ Běžná likvidita je {cr_float:.2f} (splněno)")
             else:
-                graham_eval.append(f"- ❌ Běžná likvidita je {cr_float:.2f} (pod doporučeným limitem 2.0)")
+                graham_eval.append(f"- ❌ Běžná likvidita je {cr_float:.2f} (pod limitem 2.0)")
         except: 
-            graham_eval.append("- ❌ Běžná likvidita chybí (údaj není k dispozici)")
+            graham_eval.append("- ❌ Běžná likvidita chybí")
 
         if net_debt_val is not None:
             if net_debt_val < 0:
                 graham_score += 1
-                graham_eval.append("- ✅ Více hotovosti než dluhu (excelentní finanční stabilita a bezpečnostní polštář)")
+                graham_eval.append("- ✅ Více hotovosti než dluhu")
             else:
-                graham_eval.append("- ❌ Celkový dluh převyšuje hotovost (firma spoléhá na externí financování)")
+                graham_eval.append("- ❌ Celkový dluh převyšuje hotovost")
         else: 
-            graham_eval.append("- ❌ Nelze porovnat dluh a hotovost (údaj chybí)")
+            graham_eval.append("- ❌ Nelze porovnat dluh a hotovost")
 
         graham_text = "\n".join(graham_eval)
+        
+        def safe_fmt(v): 
+            return f"{float(v):.2f}" if v != "HODNOTA_NEEXISTUJE" and v is not None else "HODNOTA_NEEXISTUJE"
 
-        summary = f"""
-        [DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ PRO {ticker}]
-        
-        ZÁKLADNÍ OCENĚNÍ A ZISKOVOST:
-        Trailing P/E Ratio (Historické): {format_decimal(pe_trailing)}
-        Forward P/E Ratio (Očekávané): {format_decimal(pe_forward)}
-        P/B Ratio: {format_decimal(pb)}
-        ROE (Rentabilita vl. kapitálu): {roe}
-        Zisková marže: {profit_margin}
+        return f"""
+        [DATA PŘÍMO Z PROFESIONÁLNÍCH ZDROJŮ (FMP API) PRO {ticker}]
+        P/E Ratio: {safe_fmt(pe_trailing)}
+        P/B Ratio: {safe_fmt(pb)}
+        ROE: {roe}
         Dividendový výnos: {dividend_yield}
-        
-        FINANČNÍ SÍLA (ROZVAHA):
         Hotovost: {format_money(cash)}
         Celkový dluh: {format_money(debt)}
-        Čistý dluh (Dluh - Hotovost): {margin_safety}
-        Current Ratio: {format_decimal(current_ratio)}
-        Debt-to-Equity: {format_decimal(debt_to_equity)}
-        
-        VÝKONNOST A CASH FLOW:
-        Celkové tržby: {format_money(revenue)}
+        Čistý dluh: {margin_safety}
+        Current Ratio: {safe_fmt(current_ratio)}
+        Debt-to-Equity: {safe_fmt(debt_to_equity)}
         Volné cash flow: {format_money(fcf)}
         
-        =================================================
         TVRDÉ FAKTA - GRAHAMOVO SKÓRE: {graham_score}/5
-        =================================================
         {graham_text}
         """
-        return summary
     except Exception as e:
-        return f"[CHYBA] Kritické selhání při stahování dat pro {ticker}: {str(e)}"
+        return f"[CHYBA] Selhání při stahování dat z FMP: {str(e)}"
 
 # --- 5. FUNKCE PRO UČENÍ (PDF) ---
 def index_documents():
     data_dir = "data"
-    if not os.path.exists(data_dir): return
+    if not os.path.exists(data_dir): 
+        return
     files = [f for f in os.listdir(data_dir) if f.endswith(".pdf")]
-    if not files: return
-    status = st.status("MInBot studuje hloubkové zprávy 10-K a PDF...")
+    if not files: 
+        return
+        
+    status = st.status("MInBot studuje hloubkové zprávy...")
     for filename in files:
         try:
-            path = os.path.join(data_dir, filename)
-            reader = PdfReader(path)
-            text = ""
-            for page in reader.pages:
-                extract = page.extract_text()
-                if extract: text += extract + " "
-            
-            chunk_size = 800 
-            overlap = 200
-            chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size - overlap)]
+            reader = PdfReader(os.path.join(data_dir, filename))
+            text = "".join([page.extract_text() + " " for page in reader.pages if page.extract_text()])
+            chunks = [text[i:i+800] for i in range(0, len(text), 600)]
             
             for i, chunk in enumerate(chunks):
-                vector = model.encode(chunk).tolist()
-                index.upsert(vectors=[{"id": f"{filename}_{i}", "values": vector, "metadata": {"text": chunk, "source": filename}}])
-        except Exception: pass      
-    status.update(label="✅ Studium dokončeno! Paměť zaktualizována.", state="complete")
+                index.upsert(
+                    vectors=[{
+                        "id": f"{filename}_{i}", 
+                        "values": model.encode(chunk).tolist(), 
+                        "metadata": {"text": chunk, "source": filename}
+                    }]
+                )
+        except: 
+            pass      
+    status.update(label="✅ Studium dokončeno!", state="complete")
 
 with st.sidebar:
     st.header("🧠 Správa znalostí")
-    if st.button("Naučit se nové dokumenty"):
+    if st.button("Naučit se nové dokumenty"): 
         index_documents()
 
 # --- 6. CHAT A LOGIKA ---
-if "messages" not in st.session_state:
+if "messages" not in st.session_state: 
     st.session_state.messages = []
 
 for msg in st.session_state.messages:
-    if msg.get("hidden"):
+    if msg.get("hidden"): 
         continue
-        
-    if msg["role"] == "assistant":
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-        if msg.get("chart_data") and msg["chart_data"][0]:
-            c_ticker, c_start, c_end = msg["chart_data"]
-            analyze_and_plot(c_ticker, c_start, c_end)
-    elif msg["role"] == "user": 
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+    with st.chat_message(msg["role"]): 
+        st.markdown(msg["content"])
+    if msg.get("chart_data") and msg["chart_data"][0]: 
+        analyze_and_plot(*msg["chart_data"])
 
 if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
     st.session_state.messages.append({"role": "user", "content": prompt, "hidden": False})
-    with st.chat_message("user"):
+    
+    with st.chat_message("user"): 
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        query_vector = model.encode(prompt).tolist()
-        results = index.query(vector=query_vector, top_k=8, include_metadata=True)
-        
-        context_books = ""
-        for res in results['matches']:
-            if 'text' in res['metadata']:
-                context_books += f"\n[Zdroj: {res['metadata']['source']}]: {res['metadata']['text']}\n"
+        # Vyhledání kontextu v paměti Pinecone
+        results = index.query(vector=model.encode(prompt).tolist(), top_k=8, include_metadata=True)
+        context_books = "".join([f"\n[Zdroj: {r['metadata']['source']}]: {r['metadata']['text']}\n" for r in results['matches'] if 'text' in r['metadata']])
 
-        # =======================================================
-        # MOZEK 1: DISPEČER
-        # =======================================================
-        system_prompt_router = f"""
-        Jsi MInBot, investiční asistent.
+        # MOZEK 1: Router
+        system_prompt_router = "Jsi MInBot. NESMÍŠ psát text. Tvá JEDINÁ povolená odpověď je [FETCH: TICKER]."
         
-        ÚKOL:
-        Uživatel žádá o analýzu akcie. Ty v tuto chvíli NEMÁŠ žádná aktuální čísla.
-        NESMÍŠ psát žádný text, nesmíš psát analýzu. 
-        Tvá JEDINÁ povolená odpověď je tato speciální značka: [FETCH: TICKER] (například [FETCH: AAPL] nebo [FETCH: 005930.KS]).
-        Vypiš ji a nic jiného.
-        """
-
-        # =======================================================
-        # MOZEK 2: ČISTÝ ANALYTIK 
-        # =======================================================
+        # MOZEK 2: Analytik
         system_prompt_analyst = f"""
-        Jsi MInBot, nekompromisní a špičkový investiční analytik z Wall Street.
+        Jsi MInBot, špičkový investiční analytik. ZNALOSTI Z REPORTŮ: {context_books} \n PORTFOLIO: {portfolio_context}
         
-        ZNALOSTI Z REPORTŮ A KNIH (Pinecone):
-        {context_books}
+        1. DYNAMICKÁ VÝHYBKA: U 4. nadpisu zvol buď 'Tvrdá data z 10-K' (americké firmy) nebo 'Lokální výroční zprávy' (zahraniční).
+        2. POVINNÁ ČÍSLA A GRAHAM: Vypiš přesná čísla. Zkopíruj 1:1 všech 5 odrážek Grahamova skóre.
+        3. TYPOLOGIE: Na konci urči Profil investora, Horizont a Roli v portfoliu.
         
-        DATA Z TABULEK:
-        {portfolio_context}
-        
-        TVŮJ ÚKOL:
-        Vypracuj naprosto detailní, hlubokou analýzu na základě dodaných dat z burzy, webu a hovorů.
-        
-        TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA PRO TEXT A STRUKTURU:
-        1. DYNAMICKÁ VÝHYBKA: Tvá odpověď musí přesně dodržet níže uvedenou strukturu. Rozhodni, zda analyzuješ americkou firmu (disponuje 10-K) nebo zahraniční firmu (nemá 10-K formulář).
-        2. POVINNÁ ČÍSLA: Přesná čísla DOSLOVA VYPIŠ do textu a přidej hluboký komentář. U "HODNOTA_NEEXISTUJE" napiš "Údaj není veřejně dostupný".
-        3. GRAHAMOVO SKÓRE: MUSÍŠ doslova opsat VŠECH 5 BODŮ. Nezkracuj je!
-        4. TYPOLOGIE INVESTORA (NOVÉ): Na základě volatility, ocenění, zadlužení a byznys modelu explicitně urči, pro jaký typ dlouhodobého investora se akcie hodí.
-        5. Mluv za sebe v první osobě. Čistá čeština.
-        
-        ŠABLONA ODPOVĚDI (DODRŽUJ PŘESNĚ):
-        
+        ŠABLONA:
         ### Základní ocenění a rentabilita
-        [Rozeber Trailing P/E, Forward P/E, P/B, ROE, Ziskovou marži a Dividendový výnos.]
-
+        [Rozbor P/E, P/B, ROE, Dividendy]
         ### Rozvaha a hotovost
-        [Rozeber Hotovost, Celkový dluh, Čistý dluh, Current ratio a Debt-to-Equity.]
-
+        [Rozbor Hotovosti, Dluhu, Current ratio, Debt-to-Equity]
         ### Hodnocení podle Benjamina Grahama
-        [Napiš celkové skóre X/5 a VYPIŠ PŘESNĚ VŠECH 5 ODRÁŽEK PŘEVZATÝCH Z DAT!]
-
-        [VYBER A VLOŽ POUZE JEDEN Z NÁSLEDUJÍCÍCH DVOU NADPISŮ:]
-        (VARIANTA A - Pokud má firma 10-K / Americká firma):
-        ### Tvrdá data z 10-K formuláře
-        [Vypiš konkrétní rizika a plány z dodaných ZNALOSTÍ.]
-        
-        (VARIANTA B - Pokud firma NEMÁ 10-K / Zahraniční firma):
-        ### Lokální výroční zprávy a hovory s akcionáři
-        [Vytěž rizika a strategii z dodaných dat z webu a z hovoru managementu z FMP.]
-
-        [VŽDY VLOŽ TYTO TŘI ZBÝVAJÍCÍ NADPISY:]
+        [Skóre a 5 odrážek]
+        [VARIANTA A: ### Tvrdá data z 10-K formuláře NEBO VARIANTA B: ### Lokální výroční zprávy a hovory s akcionáři]
         ### Syntéza tří světů (Křížová kontrola)
-        [Zde propoj všechny 3 zdroje: 1) Historická tvrdá data z 10-K či lokálních zpráv, 2) Data z hovoru s investory (FMP), 3) Aktuální zprávy z webu (DuckDuckGo). Analyzuj jejich shody či rozpory a ukaž, kam firma reálně směřuje.]
-
         ### Typologie investora a vhodnost do portfolia
-        [Zde urči, pro jakého dlouhodobého investora je akcie ideální. Rozděl to jasně na:
-        - Profil investora: (např. Konzervativní, Růstový, Hodnotový, Spekulativní).
-        - Investiční horizont: (např. 5+ let, 10+ let).
-        - Role v portfoliu: Zda by měla tvořit defenzivní jádro portfolia, dynamickou část (tzv. satelit), nebo zda jde o dividendovou dojnici.
-        Vysvětli tvé rozhodnutí na základě zjištěného rizika a fundamentů z předchozích bodů.]
-
         ### Celkové shrnutí a závěr
-        [Jasný a nekompromisní závěr pro investora, shrň hlavní rizika a výhody.]
         """
-
-        def get_api_messages(prompt_to_use):
-            msgs = [{"role": "system", "content": prompt_to_use}]
-            for m in st.session_state.messages:
-                msgs.append({"role": m["role"], "content": m["content"]})
-            return msgs
 
         try:
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=get_api_messages(system_prompt_router)
+            # Sestavení zpráv pro Router
+            messages_router = [{"role": "system", "content": system_prompt_router}]
+            for m in st.session_state.messages:
+                messages_router.append({"role": m["role"], "content": m["content"]})
+                
+            response_router = client.chat.completions.create(
+                model="gpt-4o", 
+                messages=messages_router
             )
-            raw_answer = response.choices[0].message.content or ""
+            raw_answer = response_router.choices[0].message.content or ""
             
             fund_match = re.search(r"\[FETCH:\s*([A-Za-z0-9\.\-]+)\]", raw_answer, re.IGNORECASE)
             
             if fund_match:
                 fund_ticker = fund_match.group(1).strip().upper()
-                
-                with st.spinner(f"Stahuji rozšířená data a provádím křížovou kontrolu webu pro {fund_ticker}..."):
+                with st.spinner(f"Stahuji data z VIP FMP API pro {fund_ticker}..."):
                     
                     company_name = get_company_name(fund_ticker)
-                    
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
-                    # AKTIVOVÁN KRIZOVÝ PROTOKOL
                     if "[CRITICAL_DATA_BLOCK]" in fund_context:
-                        error_msg = f"⚠️ **Kritická chyba stahování dat:**\n\nServery burzy (Yahoo/FMP) aktuálně zablokovaly náš přístup k číselným datům pro `{fund_ticker}` (aktivována ochrana proti botům). Než abych generoval nepřesnou analýzu s chybějícími daty, proces jsem raději zastavil. Zkuste to prosím znovu za několik minut."
+                        error_msg = f"⚠️ **Kritická chyba:** Ani FMP API nevrátilo data pro `{fund_ticker}`. Zkontroluj správnost tickeru, nebo platnost API klíče."
                         st.markdown(error_msg)
                         st.session_state.messages.append({"role": "assistant", "content": error_msg, "hidden": False})
                     else:
                         transcript_data = get_fmp_transcript(fund_ticker)
                         web_data = get_ddg_web_data(company_name)
                         
-                        hidden_injection = f"""Zde jsou data z burzy pro {fund_ticker} ({company_name}):\n{fund_context}
-                        
-                        DATA Z HOVORU S INVESTORY (FMP):
-                        {transcript_data}
-                        
-                        DATA Z WEBU (DuckDuckGo):
-                        {web_data}
-                        
-                        Nyní máš všechna data. Pamatuj, tvůj text musí mít jasnou strukturu. Důraz kladen na sekci "Typologie investora" - jasně urči rizikový profil a roli v portfoliu!"""
-                        
+                        hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\nHOVORY:\n{transcript_data}\nWEB:\n{web_data}\nOdpověz PŘESNĚ podle šablony."
                         st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                         
-                        response_2 = client.chat.completions.create(
-                            model="gpt-4o",
-                            messages=get_api_messages(system_prompt_analyst)
+                        # Sestavení zpráv pro Analytika
+                        messages_analyst = [{"role": "system", "content": system_prompt_analyst}]
+                        for m in st.session_state.messages:
+                            messages_analyst.append({"role": m["role"], "content": m["content"]})
+                            
+                        response_analyst = client.chat.completions.create(
+                            model="gpt-4o", 
+                            messages=messages_analyst
                         )
-                        final_answer = response_2.choices[0].message.content or ""
+                        final_answer = response_analyst.choices[0].message.content or ""
                         
                         chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", final_answer, re.IGNORECASE)
-                        chart_ticker = None; start_year = None; end_year = None
+                        chart_ticker = start_year = end_year = None
+                        
                         if chart_match:
-                            content = chart_match.group(1)
                             final_answer = final_answer.replace(chart_match.group(0), "").strip()
-                            parts = [p.strip() for p in content.split('|')]
+                            parts = [p.strip() for p in chart_match.group(1).split('|')]
                             if len(parts) >= 1: chart_ticker = parts[0]
                             if len(parts) >= 2: start_year = parts[1] if parts[1] else None
                             if len(parts) >= 3: end_year = parts[2] if parts[2] else None
 
-                        if not final_answer:
-                            final_answer = "Omlouvám se, nastala neočekávaná chyba při psaní textu."
-                            
                         st.markdown(final_answer)
                         st.session_state.messages.append({"role": "assistant", "content": final_answer, "hidden": False, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
                         
                         if chart_ticker:
-                            stats_context = analyze_and_plot(chart_ticker, start_year, end_year)
-                            if stats_context:
-                                st.session_state.messages.append({"role": "user", "content": stats_context, "hidden": True})
+                            stats = analyze_and_plot(chart_ticker, start_year, end_year)
+                            if stats: 
+                                st.session_state.messages.append({"role": "user", "content": stats, "hidden": True})
             else:
-                clean_answer = raw_answer
-                chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", clean_answer, re.IGNORECASE)
-                chart_ticker = None; start_year = None; end_year = None
+                st.markdown(raw_answer)
+                st.session_state.messages.append({"role": "assistant", "content": raw_answer, "hidden": False})
                 
-                if chart_match:
-                    content = chart_match.group(1)
-                    clean_answer = clean_answer.replace(chart_match.group(0), "").strip()
-                    parts = [p.strip() for p in content.split('|')]
-                    if len(parts) >= 1: chart_ticker = parts[0]
-                    if len(parts) >= 2: start_year = parts[1] if parts[1] else None
-                    if len(parts) >= 3: end_year = parts[2] if parts[2] else None
-                
-                if not clean_answer.strip():
-                    clean_answer = "Omlouvám se, nerozuměl jsem dotazu."
-                    
-                st.markdown(clean_answer)
-                st.session_state.messages.append({"role": "assistant", "content": clean_answer, "hidden": False, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
-
         except Exception as e:
             st.error(f"Chyba při komunikaci s AI: {e}")
