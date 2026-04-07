@@ -59,8 +59,8 @@ try:
 except Exception: 
     pass
 
-# --- 4. FUNKCE PRO VYKRESLENÍ A ANALÝZU GRAFU ---
-def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
+# --- 4. FUNKCE PRO VYKRESLENÍ A ANALÝZU GRAFU (Nyní i s přesným datem) ---
+def analyze_and_plot(ticker_symbol, start_date=None, end_date=None):
     stats_summary = None 
     try:
         with st.spinner(f"Vykresluji graf pro {ticker_symbol}..."):
@@ -70,8 +70,29 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
             y_data = data['Close'] if isinstance(data.columns, pd.MultiIndex) else data['Close']
             if isinstance(y_data, pd.DataFrame): y_data = y_data.iloc[:, 0]
 
-            if start_year and start_year.isdigit(): y_data = y_data[y_data.index.year >= int(start_year)]
-            if end_year and end_year.isdigit(): y_data = y_data[y_data.index.year <= int(end_year)]
+            # Ošetření časové osy (roky vs konkrétní dny RRRR-MM-DD)
+            if start_date:
+                start_date = start_date.strip()
+                if len(start_date) == 4 and start_date.isdigit():
+                    y_data = y_data[y_data.index.year >= int(start_date)]
+                else:
+                    try:
+                        start_dt = pd.to_datetime(start_date)
+                        if y_data.index.tz is not None: start_dt = start_dt.tz_localize(y_data.index.tz)
+                        y_data = y_data[y_data.index >= start_dt]
+                    except: pass
+
+            if end_date:
+                end_date = end_date.strip()
+                if len(end_date) == 4 and end_date.isdigit():
+                    y_data = y_data[y_data.index.year <= int(end_date)]
+                else:
+                    try:
+                        end_dt = pd.to_datetime(end_date)
+                        if y_data.index.tz is not None: end_dt = end_dt.tz_localize(y_data.index.tz)
+                        y_data = y_data[y_data.index <= end_dt]
+                    except: pass
+
             if y_data.empty: return None
 
             st.subheader(f"📈 Vývoj ceny: {ticker_symbol}")
@@ -83,11 +104,11 @@ def analyze_and_plot(ticker_symbol, start_year=None, end_year=None):
                 change_pct = ((last_price - first_price) / first_price) * 100
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Cena na konci", f"{last_price:,.2f} USD")
-                col2.metric("Změna", f"{change_pct:+.2f} %")
-                col3.metric("Nejvyšší bod (ATH)", f"{float(y_data.max()):,.2f} USD")
+                col2.metric("Změna od vybraného začátku", f"{change_pct:+.2f} %")
+                col3.metric("Nejvyšší bod (ATH) ve výběru", f"{float(y_data.max()):,.2f} USD")
             except Exception: pass
 
-            stats_summary = f"[GRAF PRO {ticker_symbol}] Počáteční cena: {first_price:.2f}, Konečná cena: {last_price:.2f}, Změna: {change_pct:.2f}%"
+            stats_summary = f"[GRAF PRO {ticker_symbol}] Počáteční cena: {first_price:.2f}, Konečná cena: {last_price:.2f}, Změna v tomto období: {change_pct:.2f}%"
     except Exception: pass
     return stats_summary
 
@@ -107,7 +128,7 @@ def get_fmp_transcript(ticker):
         resp = requests.get(url).json()
         if isinstance(resp, list) and len(resp) > 0:
             return f"(Datum hovoru: {resp[0].get('date', 'Neznámé')})\n{resp[0].get('content', '')[:3000]}..."
-        return "Údaj není veřejně dostupný (hovor nenalezen nebo API limit vyčerpán)."
+        return "Údaj není veřejně dostupný."
     except Exception as e: 
         return f"Chyba při stahování hovoru: {str(e)}"
 
@@ -131,7 +152,7 @@ def get_trusted_news(company_name):
 def get_technical_data(ticker_symbol):
     try:
         data = yf.download(ticker_symbol, period="1y", progress=False)
-        if data.empty: return "Technická data nejsou pro tento ticker momentálně dostupná."
+        if data.empty: return "Technická data nejsou momentálně dostupná."
 
         close = data['Close']
         if isinstance(close, pd.DataFrame): close = close.iloc[:, 0]
@@ -157,31 +178,30 @@ def get_technical_data(ticker_symbol):
         def fmt(val): return f"{val:.2f}" if not pd.isna(val) else "Nedostatek dat"
 
         return f"""
-        TECHNICKÁ ANALÝZA (Aktuální hodnoty k dnešnímu dni):
-        Aktuální cena: {fmt(current_price)} USD
-        SMA 50 (Krátkodobý trend): {fmt(sma_50)}
-        SMA 200 (Dlouhodobý trend): {fmt(sma_200)}
-        RSI 14 (Momentum): {fmt(rsi_val)}
+        TECHNICKÁ ANALÝZA:
+        Aktuální cena: {fmt(current_price)}
+        SMA 50: {fmt(sma_50)}
+        SMA 200: {fmt(sma_200)}
+        RSI 14: {fmt(rsi_val)}
         MACD Histogram: {fmt(macd_hist)}
         """
     except Exception as e:
         return f"Chyba při výpočtu technické analýzy: {str(e)}"
 
-# --- 4.4 NOVÉ: MAKRO A SOCIÁLNÍ RADAR ---
+# --- 4.4 MAKRO A SOCIÁLNÍ RADAR ---
 def get_social_macro_news(company_name):
     if not DDG_AVAILABLE: return "Údaj není veřejně dostupný."
     try:
-        # Hledáme širší kontext: virální trendy, geopolitiku, makroekonomiku bez omezení domén
-        query = f'"{company_name}" AND (trend OR viral OR macro OR geopolitics OR supply chain OR crisis)'
+        query = f'"{company_name}" AND (trend OR macro OR geopolitics OR supply chain OR crisis OR real estate OR inflation)'
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=3))
             if results:
                 return "\n".join([f"- [{r.get('title', '')}]: {r.get('body', '')}" for r in results])
-            return "Nebyly zaznamenány žádné výrazné virální trendy nebo makroekonomické otřesy."
+            return "Nebyly zaznamenány žádné výrazné makro trendy."
     except Exception as e:
         return f"Chyba při vyhledávání makro trendů: {str(e)}"
 
-# --- 4.5 KASKÁDOVÁ FUNDAMENTÁLNÍ DATA (Yahoo -> Alpha Vantage -> FMP) ---
+# --- 4.5 KASKÁDOVÁ FUNDAMENTÁLNÍ DATA ---
 def get_graham_fundamentals(ticker_symbol):
     ticker = ticker_symbol.upper()
     api_source = "Neznámý"
@@ -379,7 +399,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]): st.markdown(msg["content"])
     if msg.get("chart_data") and msg["chart_data"][0]: analyze_and_plot(*msg["chart_data"])
 
-if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
+if prompt := st.chat_input("Zeptej se mě na investice (Akcie, Komodity, Spoření, Reality)..."):
     st.session_state.messages.append({"role": "user", "content": prompt, "hidden": False})
     
     with st.chat_message("user"): st.markdown(prompt)
@@ -389,53 +409,61 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         context_books = "".join([f"\n[Zdroj: {r['metadata']['source']}]: {r['metadata']['text']}\n" for r in results['matches'] if 'text' in r['metadata']])
 
         system_prompt_router = """
-        Jsi inteligentní burzovní dispečer. Tvým JEDINÝM úkolem je identifikovat, na jakou společnost se uživatel ptá, a najít její oficiální burzovní ticker (např. Apple = AAPL, Meta = META, ČEZ = CEZ.PR).
-        NESMÍŠ psát žádný text, nesmíš psát analýzu. 
-        Tvá JEDINÁ povolená odpověď je speciální značka s tickerem. 
-        Formát: [FETCH: HLEDANY_TICKER]
+        Jsi inteligentní burzovní a finanční dispečer. 
+        ÚKOL 1 (TRŽNÍ AKTIVA): Pokud se uživatel ptá na akcii, ETF, komoditu nebo index (lze to najít na burze, má to ticker), najdi její ticker a vypiš [FETCH: TICKER]. (Např. Apple = AAPL, Zlato = GC=F, Ropa = CL=F).
+        ÚKOL 2 (OBECNÉ FINANCE): Pokud se uživatel ptá na obecné finanční produkty, které NEMÁJÍ ticker na burze (např. stavební spoření, důchodové připojištění, české nemovitosti, obecná makroekonomika), vypiš POUZE speciální značku [GENERAL].
+        NESMÍŠ psát absolutně žádný jiný text nebo analýzu.
         """
         
-        system_prompt_analyst = f"""
-        Jsi MInBot, nekompromisní a špičkový investiční analytik a geopolitický stratég z Wall Street.
-        ZNALOSTI Z REPORTŮ A KNIH: {context_books} \n PORTFOLIO: {portfolio_context}
+        # Šablona pro Akcie/Komodity
+        system_prompt_analyst_market = f"""
+        Jsi MInBot, nekompromisní analytik a geopolitický stratég z Wall Street.
+        ZNALOSTI Z REPORTŮ (Pinecone): {context_books} \n PORTFOLIO: {portfolio_context}
         
-        TVŮJ ÚKOL: Odpovídej na dotazy s naprostou přesností. Pokud uživatel žádá o rozbor, použij KOMPLETNÍ ŠABLONU níže.
+        TVŮJ ÚKOL: Odpovídej s naprostou přesností. Pokud je to rozbor, použij KOMPLETNÍ ŠABLONU níže.
         
         TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA:
-        1. DETEKCE ZÁMĚRU: Pro dotaz pouze na cenu odpověz stručně jednou větou.
-        2. VYKRESLOVÁNÍ GRAFŮ: Pokud uživatel chce graf, vlož značku [[GRAF: TICKER | ROK_OD | ROK_DO]].
-        3. ASOCIAČNÍ LOGIKA (DŮLEŽITÉ): Nejsi jen účetní. V sekci 'Makroekonomika a globální souvislosti' MUSÍŠ logicky propojovat tečkovat. Zhodnoť, jaký dopad mají zprávy o virálních trendech, politice, válkách nebo problémech s dodavatelskými řetězci na byznys model konkrétní firmy.
-        4. ODRÁŽKY A ZÁKAZ STRUČNOSTI: V analytických sekcích vždy vypiš data do odrážek a detailně je okomentuj.
-        5. GRAHAMOVO SKÓRE: Doslova opiš všech 5 bodů.
+        1. VYKRESLOVÁNÍ GRAFŮ GEOPOLITIKY: Pokud analyzuješ dopad události (válka, volby), MUSÍŠ sám odhadnout datum vypuknutí a vložit graf od toho dne: např. [[GRAF: TICKER | 2022-02-24 | ]] a v textu okomentuj, co se s cenou od té doby stalo!
+        2. ASOCIAČNÍ LOGIKA: V sekci Makroekonomika logicky propojuj! Jak válka ovlivní cenu ropy/zbrojařů? Jak zlevnění hypoték ovlivní stavební firmy?
+        3. ODRÁŽKY A GRAHAM: V analytických sekcích vždy vypiš data do odrážek. U Grahama opiš všech 5 bodů.
         
-        ŠABLONA ODPOVĚDI (POUŽIJ PRO ANALÝZU):
-        
+        ŠABLONA ODPOVĚDI (POUŽIJ PRO KOMPLEXNÍ ANALÝZU):
         ### Základní ocenění a rentabilita
         [Vypiš čísla do odrážek a rozepiš komentář.]
-
         ### Rozvaha a hotovost
         [Vypiš čísla do odrážek a rozepiš komentář.]
-
         ### Technická analýza a momentum
         [Vypiš hodnoty SMA, RSI a MACD do odrážek a rozeber trend.]
-
         ### Hodnocení podle Benjamina Grahama
         [Napiš skóre a VYPIŠ 5 ODRÁŽEK.]
-
-        [VARIANTA A: ### Tvrdá data z 10-K formuláře NEBO VARIANTA B: ### Lokální výroční zprávy a hovory s akcionáři]
-        [Rozeber plány managementu.]
-
         ### Aktuální dění a firemní sentiment
-        [Zanalyzuj zprávy z důvěryhodných webů (Reuters, Bloomberg atd.).]
-
+        [Zanalyzuj zprávy z důvěryhodných webů.]
         ### Makroekonomika a globální souvislosti
-        [ZDE POUŽIJ ASOCIAČNÍ LOGIKU! Rozeber širší obraz z 'Makro a sociálního radaru'. Jak virální trendy na sítích, geopolitika nebo makroekonomické vlivy dopadají na tuto konkrétní akcii?]
-
+        [ZDE POUŽIJ ASOCIAČNÍ LOGIKU! Jak trendy na sítích a geopolitika dopadají na akcii? ZDE VLOŽ GRAF GEOPOLITIKY (značka GRAF) A ZHODNOŤ HO.]
         ### Syntéza tří světů (Křížová kontrola)
-        [Propoj fundamenty, techniku, management a makroekonomiku do jednoho závěru.]
-
+        [Propoj fundamenty, techniku a makro.]
         ### Typologie investora a vhodnost do portfolia
         [Detailně urči Profil, Horizont a Roli v portfoliu.]
+        """
+
+        # Šablona pro Spoření, Důchody, Nemovitosti (BEZ GRAHAMA)
+        system_prompt_analyst_general = f"""
+        Jsi MInBot, špičkový strategický poradce pro osobní finance a správu majetku.
+        ZNALOSTI Z KNIH: {context_books} \n PORTFOLIO UŽIVATELE: {portfolio_context}
+        
+        TVŮJ ÚKOL: Uživatel se ptá na obecný investiční sektor (Spoření, Důchody, Nemovitosti atd.). TOTO NENÍ AKCIE. Neexistuje tu P/E, ani Graham. Nepoužívej akciovou šablonu.
+        
+        ŠABLONA PRO OBECNÉ FINANCE:
+        ### Princip a fungování sektoru
+        [Vysvětli, jak daný produkt (stavebko/penzijko/nemovitosti) technicky funguje a na čem se vydělává.]
+        ### Historické a aktuální makro vlivy
+        [Jak na to aktuálně dopadá inflace, úrokové sazby centrálních bank, státní dotace nebo geopolitika? Využij dodaná data z webu.]
+        ### Výhody a zásadní rizika
+        [Vybal na stůl pro a proti. Co likvidita? Co zdanění?]
+        ### Typologie investora
+        [Pro koho se tento konkrétní nástroj absolutně NEHODÍ a pro koho je naopak klíčový?]
+        ### Konečný verdikt MInBota
+        [Jasné a stručné shrnutí.]
         """
 
         try:
@@ -445,48 +473,58 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
             response_router = client.chat.completions.create(model="gpt-4o", messages=messages_router)
             raw_answer = response_router.choices[0].message.content or ""
             
-            fund_match = re.search(r"\[FETCH:\s*([A-Za-z0-9\.\-]+)\]", raw_answer, re.IGNORECASE)
+            fund_match = re.search(r"\[FETCH:\s*([A-Za-z0-9\.\-=]+)\]", raw_answer, re.IGNORECASE)
             
             if fund_match:
+                # KOLEJ 1: AKCIE A KOMODITY S TICKEREM
                 fund_ticker = fund_match.group(1).strip().upper()
                 with st.spinner(f"Skenuji trhy, fundamenty a globální trendy pro {fund_ticker}..."):
-                    
                     company_name = get_company_name(fund_ticker)
                     fund_context = get_graham_fundamentals(fund_ticker)
-                    
-                    if "[CRITICAL_DATA_BLOCK]" in fund_context:
-                        fund_context = f"[UPOZORNĚNÍ PRO AI] Kaskáda API selhala. POKRAČUJ v odpovědi podle šablony, ale více zanalyzuj makroekonomiku a zprávy!"
-                        
                     tech_data = get_technical_data(fund_ticker)
                     transcript_data = get_fmp_transcript(fund_ticker)
                     trusted_news_data = get_trusted_news(company_name)
                     social_macro_data = get_social_macro_news(company_name)
                     
-                    hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\n{tech_data}\nHOVORY:\n{transcript_data}\nFIREMNÍ ZPRÁVY:\n{trusted_news_data}\nMAKRO A SOCIÁLNÍ TRENDY:\n{social_macro_data}\n\nPamatuj na asociační logiku! Propojuj události!"
+                    hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\n{tech_data}\nHOVORY:\n{transcript_data}\nFIREMNÍ ZPRÁVY:\n{trusted_news_data}\nMAKRO A SOCIÁLNÍ TRENDY:\n{social_macro_data}\n\nPamatuj na asociační logiku a geopolitický graf!"
                     st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
                     
-                    messages_analyst = [{"role": "system", "content": system_prompt_analyst}]
+                    messages_analyst = [{"role": "system", "content": system_prompt_analyst_market}]
                     for m in st.session_state.messages: messages_analyst.append({"role": m["role"], "content": m["content"]})
                         
                     response_analyst = client.chat.completions.create(model="gpt-4o", messages=messages_analyst)
                     final_answer = response_analyst.choices[0].message.content or ""
                     
-                    chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", final_answer, re.IGNORECASE)
+                    chart_match = re.search(r"\[\[GRAF:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\]\]", final_answer, re.IGNORECASE)
                     chart_ticker = start_year = end_year = None
-                    
                     if chart_match:
                         final_answer = final_answer.replace(chart_match.group(0), "").strip()
-                        parts = [p.strip() for p in chart_match.group(1).split('|')]
-                        if len(parts) >= 1: chart_ticker = parts[0]
-                        if len(parts) >= 2: start_year = parts[1] if parts[1] else None
-                        if len(parts) >= 3: end_year = parts[2] if parts[2] else None
+                        chart_ticker = chart_match.group(1).strip()
+                        start_year = chart_match.group(2).strip() if chart_match.group(2).strip() else None
+                        end_year = chart_match.group(3).strip() if chart_match.group(3).strip() else None
 
                     st.markdown(final_answer)
                     st.session_state.messages.append({"role": "assistant", "content": final_answer, "hidden": False, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
-                    
                     if chart_ticker:
                         stats = analyze_and_plot(chart_ticker, start_year, end_year)
                         if stats: st.session_state.messages.append({"role": "user", "content": stats, "hidden": True})
+                        
+            elif "[GENERAL]" in raw_answer.upper():
+                # KOLEJ 2: SPOŘENÍ, NEMOVITOSTI, OBECNÉ FINANCE
+                with st.spinner("Zpracovávám analýzu obecného investičního sektoru..."):
+                    social_macro_data = get_social_macro_news(prompt)
+                    
+                    hidden_injection = f"DOTAZ: {prompt}\n\nMAKRO A TRENDY NA WEBU K TOMUTO TÉMATU:\n{social_macro_data}\n\nToto je OBECNÝ DOTAZ (Reality, spoření atd.). Postupuj přesně podle 'Šablony pro obecné finance'."
+                    st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
+                    
+                    messages_analyst = [{"role": "system", "content": system_prompt_analyst_general}]
+                    for m in st.session_state.messages: messages_analyst.append({"role": m["role"], "content": m["content"]})
+                        
+                    response_analyst = client.chat.completions.create(model="gpt-4o", messages=messages_analyst)
+                    final_answer = response_analyst.choices[0].message.content or ""
+                    
+                    st.markdown(final_answer)
+                    st.session_state.messages.append({"role": "assistant", "content": final_answer, "hidden": False})
             else:
                 st.markdown(raw_answer)
                 st.session_state.messages.append({"role": "assistant", "content": raw_answer, "hidden": False})
