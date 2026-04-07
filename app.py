@@ -106,7 +106,8 @@ def get_company_name(ticker):
     try:
         url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_KEY}"
         resp = requests.get(url).json()
-        if resp: return resp[0].get('companyName', ticker)
+        if isinstance(resp, list) and len(resp) > 0: 
+            return resp[0].get('companyName', ticker)
     except: pass
     return ticker
 
@@ -116,7 +117,7 @@ def get_fmp_transcript(ticker):
         resp = requests.get(url).json()
         if isinstance(resp, list) and len(resp) > 0:
             return f"(Datum hovoru: {resp[0].get('date', 'Neznámé')})\n{resp[0].get('content', '')[:3000]}..."
-        return "Údaj není veřejně dostupný (hovor nenalezen)."
+        return "Údaj není veřejně dostupný (hovor nenalezen nebo API limit vyčerpán)."
     except Exception as e: 
         return f"Chyba při stahování hovoru: {str(e)}"
 
@@ -134,31 +135,40 @@ def get_ddg_web_data(company_name):
 # --- 4.5 ROBUSTNÍ FUNDAMENTÁLNÍ DATA (FMP + YAHOO ZÁLOHA) ---
 def get_graham_fundamentals(ticker_symbol):
     ticker = ticker_symbol.upper()
+    api_error_log = ""
     try:
         quote_data = {}
         metrics_data = {}
         yf_info = {}
         
-        # 1. Zkusit FMP (Hlavní zdroj)
+        # 1. Zkusit FMP (Hlavní zdroj) s diagnostikou chyb
         try:
             q_url = f"https://financialmodelingprep.com/api/v3/quote/{ticker}?apikey={FMP_KEY}"
             q_resp = requests.get(q_url).json()
-            if q_resp: quote_data = q_resp[0]
+            if isinstance(q_resp, dict) and "Error Message" in q_resp:
+                api_error_log += f"FMP Error: {q_resp['Error Message']} "
+            elif isinstance(q_resp, list) and q_resp: 
+                quote_data = q_resp[0]
+            
             m_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{ticker}?apikey={FMP_KEY}"
             m_resp = requests.get(m_url).json()
-            if m_resp: metrics_data = m_resp[0]
-        except: pass
+            if isinstance(m_resp, list) and m_resp: 
+                metrics_data = m_resp[0]
+        except Exception as e: 
+            api_error_log += f"FMP Request Error: {str(e)} "
 
         # 2. Zkusit Yahoo Finance (jako zálohu)
         try:
             session = get_yf_session()
             stock = yf.Ticker(ticker, session=session)
             yf_info = stock.info if stock.info else {}
-        except: pass
+        except Exception as e: 
+            api_error_log += f"Yahoo Error: {str(e)} "
 
-        # Krizový protokol
+        # KRIZOVÝ PROTOKOL: Návrat diagnostiky, pokud vše selže
         if not quote_data and not metrics_data and not yf_info:
-            return "[CRITICAL_DATA_BLOCK]"
+            error_details = api_error_log if api_error_log else "Neznámá chyba, data jsou prázdná."
+            return f"[CRITICAL_DATA_BLOCK] Diagnostika chyb: {error_details}"
 
         # Sjednocení dat
         def get_best_val(fmp_q_key, fmp_m_key, yf_key):
@@ -342,34 +352,34 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
         
         system_prompt_analyst = f"""
         Jsi MInBot, nekompromisní a špičkový investiční analytik z Wall Street.
-        ZNALOSTI Z REPORTŮ: {context_books} \n PORTFOLIO: {portfolio_context}
+        ZNALOSTI Z REPORTŮ A KNIH (Pinecone): {context_books} \n PORTFOLIO A SLEDOVANÉ (Google Sheets): {portfolio_context}
         
         TVŮJ ÚKOL:
         Vypracuj naprosto detailní, hlubokou analýzu na základě dodaných dat z burzy, webu a hovorů.
         
         TVÁ NEJDŮLEŽITĚJŠÍ PRAVIDLA PRO TEXT A STRUKTURU:
-        1. NESMÍŠ BÝT STRUČNÝ! Každou sekci rozepiš do hloubky jako profesionál, nesmíš generovat krátké prázdné odstavce!
-        2. PŘEHLEDNÉ ODRÁŽKY: V sekcích "Základní ocenění" a "Rozvaha a hotovost" MUSÍŠ vždy nejprve vypsat obdržená data formou přehledných odrážek (jako malou tabulku) a až pod nimi napsat svůj detailní, analytický rozbor daných čísel.
-        3. GRAHAMOVO SKÓRE (PŘÍSNÝ ZÁKAZ): Z dodaných dat MUSÍŠ doslova opsat VŠECH 5 BODŮ. Je absolutně ZAKÁZÁNO odrážky slučovat nebo zkracovat!
+        1. ABSOLUTNÍ ZÁKAZ STRUČNOSTI: I když ti systém ohlásí, že čísla z burzy selhala, NESMÍŠ zkrátit analýzu! Pokud chybí čísla, musíš se o to masivněji rozepsat v sekcích o webu, zprávách z Pinecone a typologii investora!
+        2. PŘEHLEDNÉ ODRÁŽKY: V sekcích "Základní ocenění" a "Rozvaha a hotovost" MUSÍŠ vždy nejprve vypsat obdržená data formou odrážek. Pokud data nemáš, vypiš do odrážek "Data momentálně nedostupná". Pod odrážkami napiš analytický komentář.
+        3. GRAHAMOVO SKÓRE: Z dodaných dat MUSÍŠ doslova opsat VŠECH 5 BODŮ. Je absolutně ZAKÁZÁNO odrážky slučovat nebo zkracovat! Pokud data nemáš, vysvětli proč Grahama nelze spočítat.
         4. DYNAMICKÁ VÝHYBKA: U 4. nadpisu zvol buď 'Tvrdá data z 10-K' (americké firmy) nebo 'Lokální výroční zprávy' (zahraniční).
-        5. TYPOLOGIE INVESTORA: Na konci urči Profil investora, Horizont a Roli v portfoliu.
+        5. TYPOLOGIE INVESTORA: Na konci detailně urči Profil investora, Horizont a Roli v portfoliu na základě dostupných informací (byť by byly jen z webu a Google Sheets).
         
-        ŠABLONA ODPOVĚDI (DODRŽUJ PŘESNĚ):
+        ŠABLONA ODPOVĚDI (DODRŽUJ PŘESNĚ BEZ OHLEDU NA TO, JESTLI MÁŠ ČÍSLA NEBO NE):
         
         ### Základní ocenění a rentabilita
-        [Nejprve vypiš předložená čísla do odrážek. Následně detailně rozeber Trailing P/E, Forward P/E, P/B, ROE a Dividendy.]
+        [Vypiš čísla do odrážek a rozepiš komentář.]
 
         ### Rozvaha a hotovost
-        [Nejprve vypiš předložená čísla do odrážek. Následně detailně rozeber Hotovost, Dluh, Current ratio a Debt-to-Equity.]
+        [Vypiš čísla do odrážek a rozepiš komentář.]
 
         ### Hodnocení podle Benjamina Grahama
-        [Napiš celkové skóre X/5 a VYPIŠ PŘESNĚ VŠECH 5 ODRÁŽEK PŘEVZATÝCH Z DAT!]
+        [Napiš celkové skóre a VYPIŠ VŠECH 5 ODRÁŽEK.]
 
         [VARIANTA A: ### Tvrdá data z 10-K formuláře NEBO VARIANTA B: ### Lokální výroční zprávy a hovory s akcionáři]
-        [Rozepiš detailně rizika a plány managementu.]
+        [Rozepiš detailně rizika a plány.]
 
         ### Syntéza tří světů (Křížová kontrola)
-        [Propoj všechny 3 zdroje (historie, hovory, web z DuckDuckGo) do detailního pohledu na budoucnost.]
+        [TOTO JE NEJDŮLEŽITĚJŠÍ ČÁST POKUD CHYBÍ ČÍSLA! Zde detailně rozeber informace získané z DuckDuckGo a Pinecone.]
 
         ### Typologie investora a vhodnost do portfolia
         [Detailně urči: Profil investora, Investiční horizont, Role v portfoliu.]
@@ -394,39 +404,42 @@ if prompt := st.chat_input("Zeptej se mě na analýzu akcie..."):
                     company_name = get_company_name(fund_ticker)
                     fund_context = get_graham_fundamentals(fund_ticker)
                     
+                    # DETEKCE CHYB A MĚKKÝ PROTOKOL
                     if "[CRITICAL_DATA_BLOCK]" in fund_context:
-                        error_msg = f"⚠️ **Kritická chyba:** API servery (FMP i Yahoo) momentálně nevrací data pro `{fund_ticker}`. Zkontroluj prosím, zda tento ticker na burze skutečně existuje, nebo chvíli počkej."
-                        st.markdown(error_msg)
-                        st.session_state.messages.append({"role": "assistant", "content": error_msg, "hidden": False})
-                    else:
-                        transcript_data = get_fmp_transcript(fund_ticker)
-                        web_data = get_ddg_web_data(company_name)
+                        # Vypíše diagnostiku uživateli
+                        st.warning(f"⚠️ Živá čísla pro {fund_ticker} z burzy se nepodařilo stáhnout. \n{fund_context} \nMInBot se nyní spolehne na vyhledávání na webu (DuckDuckGo), Google Sheets a svou paměť.")
                         
-                        hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\nHOVORY:\n{transcript_data}\nWEB:\n{web_data}\n\nPamatuješ na instrukce! Vypiš nejprve přesná čísla v odrážkách, nesmíš být stručný a u Grahama opiš všech 5 bodů!"
-                        st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
+                        # Vynutí na AI, aby i tak napsalo dlouhý text
+                        fund_context = f"[UPOZORNĚNÍ PRO AI] Živá fundamentální data z burzy pro {fund_ticker} selhala. Jsi přísně instruován POKRAČOVAT v analýze podle šablony! Do sekcí s čísly napiš, že data nejsou dostupná kvůli výpadku burzovního API, ale o to více a do hloubky zanalyzuj zprávy z Webu (DuckDuckGo), paměť (Pinecone) a data ze Sledovaných/Portfolia!"
                         
-                        messages_analyst = [{"role": "system", "content": system_prompt_analyst}]
-                        for m in st.session_state.messages: messages_analyst.append({"role": m["role"], "content": m["content"]})
-                            
-                        response_analyst = client.chat.completions.create(model="gpt-4o", messages=messages_analyst)
-                        final_answer = response_analyst.choices[0].message.content or ""
+                    transcript_data = get_fmp_transcript(fund_ticker)
+                    web_data = get_ddg_web_data(company_name)
+                    
+                    hidden_injection = f"DATA PRO {fund_ticker} ({company_name}):\n{fund_context}\nHOVORY:\n{transcript_data}\nWEB:\n{web_data}\n\nNezapomeň! I když chybí čísla, NESMÍŠ zkrátit text! Vypiš všechny nadpisy a detailně analyzuj web a hovory!"
+                    st.session_state.messages.append({"role": "user", "content": hidden_injection, "hidden": True})
+                    
+                    messages_analyst = [{"role": "system", "content": system_prompt_analyst}]
+                    for m in st.session_state.messages: messages_analyst.append({"role": m["role"], "content": m["content"]})
                         
-                        chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", final_answer, re.IGNORECASE)
-                        chart_ticker = start_year = end_year = None
-                        
-                        if chart_match:
-                            final_answer = final_answer.replace(chart_match.group(0), "").strip()
-                            parts = [p.strip() for p in chart_match.group(1).split('|')]
-                            if len(parts) >= 1: chart_ticker = parts[0]
-                            if len(parts) >= 2: start_year = parts[1] if parts[1] else None
-                            if len(parts) >= 3: end_year = parts[2] if parts[2] else None
+                    response_analyst = client.chat.completions.create(model="gpt-4o", messages=messages_analyst)
+                    final_answer = response_analyst.choices[0].message.content or ""
+                    
+                    chart_match = re.search(r"\[\[GRAF:\s*(.*?)\]\]", final_answer, re.IGNORECASE)
+                    chart_ticker = start_year = end_year = None
+                    
+                    if chart_match:
+                        final_answer = final_answer.replace(chart_match.group(0), "").strip()
+                        parts = [p.strip() for p in chart_match.group(1).split('|')]
+                        if len(parts) >= 1: chart_ticker = parts[0]
+                        if len(parts) >= 2: start_year = parts[1] if parts[1] else None
+                        if len(parts) >= 3: end_year = parts[2] if parts[2] else None
 
-                        st.markdown(final_answer)
-                        st.session_state.messages.append({"role": "assistant", "content": final_answer, "hidden": False, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
-                        
-                        if chart_ticker:
-                            stats = analyze_and_plot(chart_ticker, start_year, end_year)
-                            if stats: st.session_state.messages.append({"role": "user", "content": stats, "hidden": True})
+                    st.markdown(final_answer)
+                    st.session_state.messages.append({"role": "assistant", "content": final_answer, "hidden": False, "chart_data": (chart_ticker, start_year, end_year) if chart_ticker else None})
+                    
+                    if chart_ticker:
+                        stats = analyze_and_plot(chart_ticker, start_year, end_year)
+                        if stats: st.session_state.messages.append({"role": "user", "content": stats, "hidden": True})
             else:
                 st.markdown(raw_answer)
                 st.session_state.messages.append({"role": "assistant", "content": raw_answer, "hidden": False})
